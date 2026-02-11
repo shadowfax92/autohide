@@ -65,6 +65,10 @@ autohide config edit
 
 A floating countdown widget for focus sessions. Stays on top of all windows, visible on every desktop.
 
+<p align="center">
+  <img src="assets/overlay.png" alt="autohide overlay timer" width="360">
+</p>
+
 ```bash
 autohide overlay start "API docs" 45m    # start a 45-minute session
 autohide overlay pause                    # pause the countdown
