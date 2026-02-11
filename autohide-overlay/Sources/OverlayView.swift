@@ -51,10 +51,10 @@ struct OverlayView: View {
     }
 
     private func startPulse() {
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: info.effectivePulseInterval, repeats: true) { _ in
             DispatchQueue.main.async {
                 glowing = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + info.effectivePulseDuration) {
                     glowing = false
                 }
             }

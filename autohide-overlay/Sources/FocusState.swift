@@ -5,13 +5,20 @@ struct FocusInfo: Codable {
     let durationSeconds: Int
     let remainingSeconds: Int
     let paused: Bool
+    let pulseInterval: Double?
+    let pulseDuration: Double?
 
     enum CodingKeys: String, CodingKey {
         case task
         case durationSeconds = "duration_seconds"
         case remainingSeconds = "remaining_seconds"
         case paused
+        case pulseInterval = "pulse_interval"
+        case pulseDuration = "pulse_duration"
     }
+
+    var effectivePulseInterval: TimeInterval { pulseInterval ?? 60 }
+    var effectivePulseDuration: TimeInterval { pulseDuration ?? 1.5 }
 
     var progress: Double {
         guard durationSeconds > 0 else { return 0 }
@@ -29,7 +36,9 @@ struct FocusInfo: Codable {
         task: "API docs",
         durationSeconds: 2700,
         remainingSeconds: 1421,
-        paused: false
+        paused: false,
+        pulseInterval: nil,
+        pulseDuration: nil
     )
 }
 
