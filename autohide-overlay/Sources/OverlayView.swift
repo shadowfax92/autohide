@@ -3,6 +3,9 @@ import SwiftUI
 struct OverlayView: View {
     let info: FocusInfo
 
+    @State private var glowing = false
+    @State private var pulseTimer: Timer?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -39,8 +42,23 @@ struct OverlayView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.white.opacity(0.1), lineWidth: 0.5)
+                .strokeBorder(glowing ? Color.cyan : .white.opacity(0.1), lineWidth: glowing ? 1.5 : 0.5)
+                .shadow(color: glowing ? .cyan.opacity(0.6) : .clear, radius: glowing ? 8 : 0)
         )
+        .animation(.easeInOut(duration: 0.8), value: glowing)
+        .onAppear { startPulse() }
+        .onDisappear { pulseTimer?.invalidate() }
+    }
+
+    private func startPulse() {
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            DispatchQueue.main.async {
+                glowing = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    glowing = false
+                }
+            }
+        }
     }
 
     private var timeColor: Color {
