@@ -1,0 +1,165 @@
+package daemon
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"time"
+
+	"autohide/ipc"
+
+	"github.com/rs/zerolog"
+)
+
+type Server struct {
+	daemon   *Daemon
+	sockPath string
+	logger   zerolog.Logger
+	listener net.Listener
+}
+
+func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
+	return &Server{
+		daemon:   d,
+		sockPath: sockPath,
+		logger:   logger,
+	}
+}
+
+func (s *Server) Start() error {
+	if _, err := os.Stat(s.sockPath); err == nil {
+		conn, err := net.DialTimeout("unix", s.sockPath, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return fmt.Errorf("daemon already running (socket %s is active)", s.sockPath)
+		}
+		os.Remove(s.sockPath)
+	}
+
+	ln, err := net.Listen("unix", s.sockPath)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.sockPath, err)
+	}
+	s.listener = ln
+
+	go s.accept()
+	s.logger.Info().Str("socket", s.sockPath).Msg("IPC server listening")
+	return nil
+}
+
+func (s *Server) Stop() {
+	if s.listener != nil {
+		s.listener.Close()
+	}
+	os.Remove(s.sockPath)
+}
+
+func (s *Server) accept() {
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			return
+		}
+		go s.handle(conn)
+	}
+}
+
+func (s *Server) handle(conn net.Conn) {
+	defer conn.Close()
+
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return
+	}
+
+	var req ipc.Request
+	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+		s.writeResponse(conn, ipc.Response{Error: "invalid request"})
+		return
+	}
+
+	var resp ipc.Response
+	switch req.Command {
+	case "status":
+		resp = s.handleStatus()
+	case "pause":
+		resp = s.handlePause(req)
+	case "resume":
+		resp = s.handleResume()
+	case "list":
+		resp = s.handleList()
+	default:
+		resp = ipc.Response{Error: fmt.Sprintf("unknown command: %s", req.Command)}
+	}
+
+	s.writeResponse(conn, resp)
+}
+
+func (s *Server) handleStatus() ipc.Response {
+	paused, resumeAt := s.daemon.IsPaused()
+	data := ipc.StatusData{
+		Running:      true,
+		Paused:       paused,
+		Uptime:       s.daemon.Uptime().Round(time.Second).String(),
+		TrackedCount: s.daemon.TrackerCount(),
+	}
+	if resumeAt != nil {
+		data.ResumeAt = resumeAt.Format(time.RFC3339)
+	}
+	return ipc.Response{OK: true, Data: data}
+}
+
+func (s *Server) handlePause(req ipc.Request) ipc.Response {
+	var dur time.Duration
+	if d, ok := req.Args["duration"]; ok && d != "" {
+		var err error
+		dur, err = time.ParseDuration(d)
+		if err != nil {
+			return ipc.Response{Error: fmt.Sprintf("invalid duration: %s", d)}
+		}
+	}
+	resumeAt := s.daemon.Pause(dur)
+	data := ipc.PauseData{Paused: true}
+	if resumeAt != nil {
+		data.ResumeAt = resumeAt.Format(time.RFC3339)
+	}
+	s.logger.Info().Dur("duration", dur).Msg("daemon paused")
+	return ipc.Response{OK: true, Data: data}
+}
+
+func (s *Server) handleResume() ipc.Response {
+	s.daemon.Resume()
+	s.logger.Info().Msg("daemon resumed")
+	return ipc.Response{OK: true, Data: ipc.PauseData{Paused: false}}
+}
+
+func (s *Server) handleList() ipc.Response {
+	tracked := s.daemon.TrackerList()
+	now := time.Now()
+
+	apps := make([]ipc.AppInfo, 0, len(tracked))
+	for _, a := range tracked {
+		remaining := a.Timeout - now.Sub(a.LastActive)
+		if remaining < 0 || a.Hidden || a.Disabled {
+			remaining = 0
+		}
+		apps = append(apps, ipc.AppInfo{
+			Name:          a.Name,
+			LastActive:    a.LastActive.Format(time.RFC3339),
+			Timeout:       a.Timeout.String(),
+			Hidden:        a.Hidden,
+			TimeRemaining: remaining.Round(time.Second).String(),
+			Disabled:      a.Disabled,
+		})
+	}
+
+	return ipc.Response{OK: true, Data: ipc.ListData{Apps: apps}}
+}
+
+func (s *Server) writeResponse(conn net.Conn, resp ipc.Response) {
+	data, _ := json.Marshal(resp)
+	data = append(data, '\n')
+	conn.Write(data)
+}
