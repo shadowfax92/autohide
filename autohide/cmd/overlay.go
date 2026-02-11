@@ -3,12 +3,18 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"autohide/config"
 	"autohide/ipc"
 
 	"github.com/spf13/cobra"
+)
+
+var (
+	pulseInterval float64
+	pulseDuration float64
 )
 
 var overlayCmd = &cobra.Command{
@@ -61,6 +67,8 @@ var overlayShowCmd = &cobra.Command{
 }
 
 func init() {
+	overlayStartCmd.Flags().Float64Var(&pulseInterval, "pulse-interval", 60, "seconds between pulse animations")
+	overlayStartCmd.Flags().Float64Var(&pulseDuration, "pulse-duration", 1.5, "pulse animation duration in seconds")
 	overlayCmd.AddCommand(overlayStartCmd)
 	overlayCmd.AddCommand(overlayStopCmd)
 	overlayCmd.AddCommand(overlayPauseCmd)
@@ -124,8 +132,10 @@ func runOverlayStart(cmd *cobra.Command, args []string) error {
 	}
 
 	data, err := sendOverlayCmd("overlay_start", map[string]string{
-		"task":     task,
-		"duration": durStr,
+		"task":           task,
+		"duration":       durStr,
+		"pulse_interval": strconv.FormatFloat(pulseInterval, 'f', -1, 64),
+		"pulse_duration": strconv.FormatFloat(pulseDuration, 'f', -1, 64),
 	})
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"autohide/ipc"
@@ -194,7 +195,21 @@ func (s *Server) handleFocusStart(req ipc.Request) ipc.Response {
 	if err != nil {
 		return ipc.Response{Error: fmt.Sprintf("invalid duration: %s", durStr)}
 	}
-	if err := s.daemon.Overlay().Start(task, dur); err != nil {
+
+	pulseInterval := 60.0
+	if v := req.Args["pulse_interval"]; v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			pulseInterval = f
+		}
+	}
+	pulseDuration := 1.5
+	if v := req.Args["pulse_duration"]; v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			pulseDuration = f
+		}
+	}
+
+	if err := s.daemon.Overlay().Start(task, dur, pulseInterval, pulseDuration); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}

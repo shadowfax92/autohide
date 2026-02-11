@@ -13,19 +13,23 @@ import (
 )
 
 type FocusState struct {
-	Task             string `json:"task"`
-	DurationSeconds  int    `json:"duration_seconds"`
-	RemainingSeconds int    `json:"remaining_seconds"`
-	Paused           bool   `json:"paused"`
-	UpdatedAt        string `json:"updated_at"`
+	Task             string  `json:"task"`
+	DurationSeconds  int     `json:"duration_seconds"`
+	RemainingSeconds int     `json:"remaining_seconds"`
+	Paused           bool    `json:"paused"`
+	PulseInterval    float64 `json:"pulse_interval"`
+	PulseDuration    float64 `json:"pulse_duration"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 type focusSession struct {
-	task      string
-	duration  time.Duration
-	startedAt time.Time
-	pausedAt  *time.Time
-	pausedDur time.Duration
+	task          string
+	duration      time.Duration
+	startedAt     time.Time
+	pausedAt      *time.Time
+	pausedDur     time.Duration
+	pulseInterval float64
+	pulseDuration float64
 }
 
 func (s *focusSession) remaining() time.Duration {
@@ -62,7 +66,7 @@ func (fm *FocusManager) Cleanup() {
 	exec.Command("pkill", "-x", "autohide-overlay").Run()
 }
 
-func (fm *FocusManager) Start(task string, duration time.Duration) error {
+func (fm *FocusManager) Start(task string, duration time.Duration, pulseInterval, pulseDuration float64) error {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
@@ -71,9 +75,11 @@ func (fm *FocusManager) Start(task string, duration time.Duration) error {
 	}
 
 	fm.session = &focusSession{
-		task:      task,
-		duration:  duration,
-		startedAt: time.Now(),
+		task:          task,
+		duration:      duration,
+		startedAt:     time.Now(),
+		pulseInterval: pulseInterval,
+		pulseDuration: pulseDuration,
 	}
 	fm.overlayHidden = false
 
@@ -185,6 +191,8 @@ func (fm *FocusManager) buildStateLocked() *FocusState {
 		DurationSeconds:  int(fm.session.duration.Seconds()),
 		RemainingSeconds: int(r.Seconds()),
 		Paused:           fm.session.pausedAt != nil,
+		PulseInterval:    fm.session.pulseInterval,
+		PulseDuration:    fm.session.pulseDuration,
 		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 }
