@@ -45,8 +45,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	focus := "off"
+	if data.FocusMode {
+		focus = "on"
+	}
+
 	fmt.Printf("Status:    running\n")
 	fmt.Printf("Paused:    %s\n", paused)
+	fmt.Printf("Focus:     %s\n", focus)
 	fmt.Printf("Uptime:    %s\n", data.Uptime)
 	fmt.Printf("Tracked:   %d apps\n", data.TrackedCount)
 	return nil

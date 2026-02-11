@@ -20,6 +20,7 @@ type Daemon struct {
 	mu        sync.RWMutex
 	paused    bool
 	resumeAt  *time.Time
+	focusMode bool
 	startTime time.Time
 }
 
@@ -98,14 +99,32 @@ func (d *Daemon) tick() {
 
 	d.mu.RLock()
 	cfg := d.cfg
+	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	toHide := d.tracker.Update(cfg, frontmost, visible)
-
-	for _, name := range toHide {
-		d.logger.Info().Str("app", name).Msg("hiding inactive app")
-		if err := HideApp(name); err != nil {
-			d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+	if focusMode {
+		// Focus mode: hide everything except frontmost immediately
+		for _, name := range visible {
+			if name == frontmost {
+				continue
+			}
+			_, disabled := cfg.EffectiveTimeout(name)
+			if disabled {
+				continue
+			}
+			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
+			if err := HideApp(name); err != nil {
+				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+			}
+		}
+	} else {
+		// Normal mode: timeout-based hiding
+		toHide := d.tracker.Update(cfg, frontmost, visible)
+		for _, name := range toHide {
+			d.logger.Info().Str("app", name).Msg("hiding inactive app")
+			if err := HideApp(name); err != nil {
+				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+			}
 		}
 	}
 }
@@ -157,6 +176,23 @@ func (d *Daemon) TrackerList() []AppInfo {
 	return d.tracker.List(cfg)
 }
 
-func (d *Daemon) Focus() *FocusManager {
+func (d *Daemon) Overlay() *FocusManager {
 	return d.focus
+}
+
+func (d *Daemon) SetFocusMode(on bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.focusMode = on
+	if on {
+		d.logger.Info().Msg("focus mode enabled")
+	} else {
+		d.logger.Info().Msg("focus mode disabled")
+	}
+}
+
+func (d *Daemon) IsFocusMode() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.focusMode
 }

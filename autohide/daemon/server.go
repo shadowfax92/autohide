@@ -104,6 +104,14 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleFocusHide()
 	case "overlay_show":
 		resp = s.handleFocusShow()
+	case "focus_on":
+		s.daemon.SetFocusMode(true)
+		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: true}}
+	case "focus_off":
+		s.daemon.SetFocusMode(false)
+		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: false}}
+	case "focus_status":
+		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: s.daemon.IsFocusMode()}}
 	default:
 		resp = ipc.Response{Error: fmt.Sprintf("unknown command: %s", req.Command)}
 	}
@@ -116,6 +124,7 @@ func (s *Server) handleStatus() ipc.Response {
 	data := ipc.StatusData{
 		Running:      true,
 		Paused:       paused,
+		FocusMode:    s.daemon.IsFocusMode(),
 		Uptime:       s.daemon.Uptime().Round(time.Second).String(),
 		TrackedCount: s.daemon.TrackerCount(),
 	}
@@ -185,26 +194,26 @@ func (s *Server) handleFocusStart(req ipc.Request) ipc.Response {
 	if err != nil {
 		return ipc.Response{Error: fmt.Sprintf("invalid duration: %s", durStr)}
 	}
-	if err := s.daemon.Focus().Start(task, dur); err != nil {
+	if err := s.daemon.Overlay().Start(task, dur); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
 }
 
 func (s *Server) handleFocusStop() ipc.Response {
-	s.daemon.Focus().Stop()
+	s.daemon.Overlay().Stop()
 	return ipc.Response{OK: true, Data: ipc.OverlayStatusData{Active: false}}
 }
 
 func (s *Server) handleFocusPause() ipc.Response {
-	if err := s.daemon.Focus().Pause(); err != nil {
+	if err := s.daemon.Overlay().Pause(); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
 }
 
 func (s *Server) handleFocusResume() ipc.Response {
-	if err := s.daemon.Focus().Resume(); err != nil {
+	if err := s.daemon.Overlay().Resume(); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
@@ -215,21 +224,21 @@ func (s *Server) handleFocusStatus() ipc.Response {
 }
 
 func (s *Server) handleFocusHide() ipc.Response {
-	if err := s.daemon.Focus().HideOverlay(); err != nil {
+	if err := s.daemon.Overlay().HideOverlay(); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
 }
 
 func (s *Server) handleFocusShow() ipc.Response {
-	if err := s.daemon.Focus().ShowOverlay(); err != nil {
+	if err := s.daemon.Overlay().ShowOverlay(); err != nil {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
 }
 
 func (s *Server) focusStatusData() ipc.OverlayStatusData {
-	state, overlayHidden := s.daemon.Focus().Status()
+	state, overlayHidden := s.daemon.Overlay().Status()
 	if state == nil {
 		return ipc.OverlayStatusData{Active: false}
 	}

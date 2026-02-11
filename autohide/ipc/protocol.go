@@ -14,6 +14,7 @@ type Response struct {
 type StatusData struct {
 	Running      bool   `json:"running"`
 	Paused       bool   `json:"paused"`
+	FocusMode    bool   `json:"focus_mode"`
 	Uptime       string `json:"uptime"`
 	TrackedCount int    `json:"tracked_count"`
 	ResumeAt     string `json:"resume_at,omitempty"`
@@ -38,10 +39,14 @@ type PauseData struct {
 }
 
 type OverlayStatusData struct {
-	Active           bool   `json:"active"`
-	Task             string `json:"task,omitempty"`
-	Duration         string `json:"duration,omitempty"`
-	Remaining        string `json:"remaining,omitempty"`
-	Paused           bool   `json:"paused,omitempty"`
-	OverlayHidden    bool   `json:"overlay_hidden,omitempty"`
+	Active        bool   `json:"active"`
+	Task          string `json:"task,omitempty"`
+	Duration      string `json:"duration,omitempty"`
+	Remaining     string `json:"remaining,omitempty"`
+	Paused        bool   `json:"paused,omitempty"`
+	OverlayHidden bool   `json:"overlay_hidden,omitempty"`
+}
+
+type FocusModeData struct {
+	Active bool `json:"active"`
 }
