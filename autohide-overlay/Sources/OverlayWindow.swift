@@ -28,16 +28,16 @@ func createOverlayWindow(reader: FocusStateReader) -> NSPanel {
     panel.isMovableByWindowBackground = true
     panel.hidesOnDeactivate = false
 
-    positionTopRight(panel)
+    positionBottomCenter(panel)
 
     return panel
 }
 
-private func positionTopRight(_ panel: NSPanel) {
+private func positionBottomCenter(_ panel: NSPanel) {
     guard let screen = NSScreen.main else { return }
     let screenFrame = screen.visibleFrame
-    let x = screenFrame.maxX - panel.frame.width - 16
-    let y = screenFrame.maxY - panel.frame.height - 8
+    let x = screenFrame.midX - panel.frame.width / 2
+    let y = screenFrame.minY + 16
     panel.setFrameOrigin(NSPoint(x: x, y: y))
 }
 
