@@ -19,9 +19,10 @@ struct FocusInfo: Codable {
     }
 
     var timeString: String {
-        let m = remainingSeconds / 60
-        let s = remainingSeconds % 60
-        return String(format: "%d:%02d", m, s)
+        let h = remainingSeconds / 3600
+        let m = (remainingSeconds % 3600 + 59) / 60
+        if h > 0 { return "\(h)h \(m)m" }
+        return "\(m)m"
     }
 
     static let placeholder = FocusInfo(
