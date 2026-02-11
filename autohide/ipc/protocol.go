@@ -36,3 +36,12 @@ type PauseData struct {
 	Paused   bool   `json:"paused"`
 	ResumeAt string `json:"resume_at,omitempty"`
 }
+
+type OverlayStatusData struct {
+	Active           bool   `json:"active"`
+	Task             string `json:"task,omitempty"`
+	Duration         string `json:"duration,omitempty"`
+	Remaining        string `json:"remaining,omitempty"`
+	Paused           bool   `json:"paused,omitempty"`
+	OverlayHidden    bool   `json:"overlay_hidden,omitempty"`
+}

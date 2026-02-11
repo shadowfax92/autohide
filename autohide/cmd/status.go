@@ -21,6 +21,9 @@ func init() {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
+	if err := ensureDaemon(); err != nil {
+		return err
+	}
 	client := ipc.NewClient(config.SocketPath())
 	resp, err := client.Send(ipc.Request{Command: "status"})
 	if err != nil {

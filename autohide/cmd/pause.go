@@ -25,6 +25,9 @@ func init() {
 }
 
 func runPause(cmd *cobra.Command, args []string) error {
+	if err := ensureDaemon(); err != nil {
+		return err
+	}
 	reqArgs := map[string]string{}
 	if pauseDuration != "" {
 		reqArgs["duration"] = pauseDuration
