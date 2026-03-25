@@ -1,8 +1,16 @@
 package main
 
-import "autohide/cmd"
+import (
+	"runtime"
+
+	"autohide/cmd"
+)
 
 var version = "dev"
+
+func init() {
+	runtime.LockOSThread()
+}
 
 func main() {
 	cmd.SetVersion(version)
