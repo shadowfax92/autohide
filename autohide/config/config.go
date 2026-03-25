@@ -34,9 +34,14 @@ type AppConfig struct {
 	Disabled bool     `toml:"disabled,omitempty"`
 }
 
+type MenubarConfig struct {
+	TimeoutPresets []Duration `toml:"timeout_presets"`
+}
+
 type Config struct {
 	General GeneralConfig        `toml:"general"`
 	Apps    map[string]AppConfig `toml:"apps"`
+	Menubar MenubarConfig        `toml:"menubar"`
 }
 
 func Default() *Config {
@@ -48,6 +53,14 @@ func Default() *Config {
 		},
 		Apps: map[string]AppConfig{
 			"Finder": {Disabled: true},
+		},
+		Menubar: MenubarConfig{
+			TimeoutPresets: []Duration{
+				{30 * time.Second},
+				{1 * time.Minute},
+				{2 * time.Minute},
+				{5 * time.Minute},
+			},
 		},
 	}
 }

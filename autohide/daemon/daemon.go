@@ -196,3 +196,12 @@ func (d *Daemon) IsFocusMode() bool {
 	defer d.mu.RUnlock()
 	return d.focusMode
 }
+
+func (d *Daemon) SetDefaultTimeout(dur time.Duration) error {
+	d.mu.Lock()
+	d.cfg.General.DefaultTimeout = config.Duration{Duration: dur}
+	cfg := d.cfg
+	cfgPath := d.cfgPath
+	d.mu.Unlock()
+	return config.Save(cfg, cfgPath)
+}

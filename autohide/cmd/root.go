@@ -73,7 +73,7 @@ func ensureDaemon() error {
 		return fmt.Errorf("cannot find own binary: %w", err)
 	}
 
-	cmd := exec.Command(exe, "daemon")
+	cmd := exec.Command(exe, "daemon", "--no-menubar")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil

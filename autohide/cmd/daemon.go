@@ -8,10 +8,13 @@ import (
 
 	"autohide/config"
 	"autohide/daemon"
+	"autohide/menubar"
 
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
+
+var noMenubar bool
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -20,6 +23,7 @@ var daemonCmd = &cobra.Command{
 }
 
 func init() {
+	daemonCmd.Flags().BoolVar(&noMenubar, "no-menubar", false, "run without menu bar (headless mode)")
 	rootCmd.AddCommand(daemonCmd)
 }
 
@@ -63,5 +67,17 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
-	return d.Run(ctx)
+	if noMenubar {
+		return d.Run(ctx)
+	}
+
+	go func() {
+		if err := d.Run(ctx); err != nil {
+			logger.Error().Err(err).Msg("daemon error")
+		}
+		os.Exit(0)
+	}()
+
+	menubar.Run(d)
+	return nil
 }
