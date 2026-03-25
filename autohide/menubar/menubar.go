@@ -26,12 +26,12 @@ func Run(d *daemon.Daemon) {
 func menuTitle() string {
 	paused, _ := dm.IsPaused()
 	if paused {
-		return "AH||"
+		return "⏸"
 	}
 	if dm.IsFocusMode() {
-		return "AH*"
+		return "🎯"
 	}
-	return "AH"
+	return "🫥"
 }
 
 func titleUpdater() {

@@ -25,6 +25,11 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
         <string>{{.BinaryPath}}</string>
         <string>daemon</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{{.HomeDir}}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -80,12 +85,15 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 	defer f.Close()
 
+	home, _ := os.UserHomeDir()
 	if err := tmpl.Execute(f, struct {
 		BinaryPath string
 		LogPath    string
+		HomeDir    string
 	}{
 		BinaryPath: exe,
 		LogPath:    logPath,
+		HomeDir:    home,
 	}); err != nil {
 		return err
 	}
