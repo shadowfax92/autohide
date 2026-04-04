@@ -3,6 +3,7 @@ package menubar
 import (
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"autohide/config"
@@ -24,14 +25,23 @@ func Run(d *daemon.Daemon) {
 }
 
 func menuTitle() string {
+	// Determine state emoji
+	emoji := "🫥"
 	paused, _ := dm.IsPaused()
 	if paused {
-		return "⏸"
+		emoji = "⏸"
+	} else if dm.IsFocusMode() {
+		emoji = "🎯"
 	}
-	if dm.IsFocusMode() {
-		return "🎯"
+
+	// Append workspace label if one is configured for the current space
+	cfg := dm.Config()
+	if ws, err := daemon.GetCurrentWorkspaceNumber(); err == nil {
+		if label := cfg.WorkspaceLabel(ws); label != "" {
+			return emoji + " " + label
+		}
 	}
-	return "🫥"
+	return emoji
 }
 
 func titleUpdater() {
@@ -103,6 +113,12 @@ func menuItems() []menuet.MenuItem {
 		Children: func() []menuet.MenuItem { return timeoutItems(cfg) },
 	})
 
+	// Workspace labels submenu
+	items = append(items, menuet.MenuItem{
+		Text:     workspaceSubmenuTitle(cfg),
+		Children: func() []menuet.MenuItem { return workspaceItems(cfg) },
+	})
+
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})
 
 	items = append(items, menuet.MenuItem{
@@ -154,4 +170,52 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", m, s)
 	}
 	return d.String()
+}
+
+func workspaceSubmenuTitle(cfg *config.Config) string {
+	currentWs, err := daemon.GetCurrentWorkspaceNumber()
+	if err != nil {
+		return "Workspaces"
+	}
+	label := cfg.WorkspaceLabel(currentWs)
+	if label != "" {
+		return fmt.Sprintf("Workspace %d: %s", currentWs, label)
+	}
+	return fmt.Sprintf("Workspace %d", currentWs)
+}
+
+func workspaceItems(cfg *config.Config) []menuet.MenuItem {
+	currentWs, _ := daemon.GetCurrentWorkspaceNumber()
+	wsMap := cfg.WorkspaceMap()
+
+	var items []menuet.MenuItem
+
+	// Show current workspace at top
+	items = append(items, menuet.MenuItem{
+		Text: fmt.Sprintf("Current: Workspace %d", currentWs),
+	})
+	items = append(items, menuet.MenuItem{Type: menuet.Separator})
+
+	// List all configured workspace labels sorted by number
+	if len(wsMap) == 0 {
+		items = append(items, menuet.MenuItem{Text: "No labels configured"})
+		items = append(items, menuet.MenuItem{Text: "Use: autohide workspace set <num> <label>"})
+		return items
+	}
+
+	nums := make([]int, 0, len(wsMap))
+	for n := range wsMap {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+
+	for _, n := range nums {
+		text := fmt.Sprintf("%d: %s", n, wsMap[n])
+		items = append(items, menuet.MenuItem{
+			Text:  text,
+			State: n == currentWs,
+		})
+	}
+
+	return items
 }
