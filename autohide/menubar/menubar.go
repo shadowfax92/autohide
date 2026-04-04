@@ -18,9 +18,19 @@ import (
 
 // workspaceEmojis is the pool of emojis randomly assigned to workspaces.
 var workspaceEmojis = []string{
-	"🔵", "🟢", "🟡", "🟠", "🔴", "🟣", "⚪",
-	"💎", "🔥", "⚡", "🌊", "🌿", "🎵", "🚀",
-	"💡", "🎨", "📦", "🔧", "📡", "🏗️", "🧪",
+	// shapes & colors
+	"🔵", "🟢", "🟡", "🟠", "🔴", "🟣", "⚪", "🟤", "🩵", "🩷",
+	// nature & elements
+	"🔥", "⚡", "🌊", "🌿", "🌸", "🍀", "🌙", "☀️", "❄️", "🌈",
+	"🌋", "🍃", "🌻", "🌴", "🍄", "🦋", "🐝", "🐙", "🦊", "🐺",
+	// objects & tools
+	"💎", "🎵", "🚀", "💡", "🎨", "📦", "🔧", "📡", "🧪", "🔬",
+	"🎯", "🎲", "🎸", "🎹", "📸", "🔮", "💫", "🧲", "⚙️", "🛠️",
+	// food & drink
+	"🍕", "🍊", "🍋", "🍇", "🍉", "🫐", "🥑", "🌶️", "☕", "🧁",
+	// symbols & misc
+	"⭐", "✨", "💜", "💙", "💚", "💛", "🧡", "❤️", "🤍", "🖤",
+	"🏔️", "🏝️", "🎪", "🏗️", "🗿", "🧊", "🪐", "🛸", "⚓", "🎭",
 }
 
 // emojiAssignments caches which emoji was assigned to each workspace number.
@@ -74,19 +84,20 @@ func menuTitle() string {
 		stateEmoji = "🎯"
 	}
 
-	// Append workspace label if one is configured for the current space
+	// Append workspace emoji + label for the current space
 	cfg := dm.Config()
 	ws, err := daemon.GetCurrentWorkspaceNumber()
 	if err != nil {
 		return stateEmoji
 	}
 
+	wsEmoji := workspaceEmoji(ws)
 	label := cfg.WorkspaceLabel(ws)
 	if label != "" {
-		return stateEmoji + " " + label
+		return stateEmoji + " " + wsEmoji + " " + label
 	}
-	// Show workspace emoji + number when no label is set
-	return stateEmoji + " " + workspaceEmoji(ws) + strconv.Itoa(ws)
+	// No label — just show emoji + workspace number
+	return stateEmoji + " " + wsEmoji + strconv.Itoa(ws)
 }
 
 func titleUpdater() {
