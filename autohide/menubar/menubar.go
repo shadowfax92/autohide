@@ -18,8 +18,6 @@ import (
 
 // workspaceEmojis is the pool of emojis randomly assigned to workspaces.
 var workspaceEmojis = []string{
-	// shapes & colors
-	"🔵", "🟢", "🟡", "🟠", "🔴", "🟣", "⚪", "🟤", "🩵", "🩷",
 	// nature & elements
 	"🔥", "⚡", "🌊", "🌿", "🌸", "🍀", "🌙", "☀️", "❄️", "🌈",
 	"🌋", "🍃", "🌻", "🌴", "🍄", "🦋", "🐝", "🐙", "🦊", "🐺",
@@ -29,8 +27,8 @@ var workspaceEmojis = []string{
 	// food & drink
 	"🍕", "🍊", "🍋", "🍇", "🍉", "🫐", "🥑", "🌶️", "☕", "🧁",
 	// symbols & misc
-	"⭐", "✨", "💜", "💙", "💚", "💛", "🧡", "❤️", "🤍", "🖤",
-	"🏔️", "🏝️", "🎪", "🏗️", "🗿", "🧊", "🪐", "🛸", "⚓", "🎭",
+	"⭐", "✨", "🏔️", "🏝️", "🎪", "🏗️", "🗿", "🧊", "🪐", "🛸",
+	"⚓", "🎭", "🧬", "🎠", "🛡️", "🪄", "🏄", "🧭", "🪩", "🫧",
 }
 
 // emojiAssignments caches which emoji was assigned to each workspace number.
