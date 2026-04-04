@@ -15,8 +15,9 @@ extern CFArrayRef CGSCopyManagedDisplaySpaces(CGSConnectionID cid);
 // Returns 0 if the active space is not found in any display's space list.
 static int getWorkspaceNumber() {
     CGSConnectionID conn = CGSMainConnectionID();
-    uint64_t activeSpace = CGSGetActiveSpace(conn);
+    if (conn == 0) return 0;
 
+    uint64_t activeSpace = CGSGetActiveSpace(conn);
     CFArrayRef displaySpaces = CGSCopyManagedDisplaySpaces(conn);
     if (!displaySpaces) return 0;
 
