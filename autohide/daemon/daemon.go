@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -204,4 +205,25 @@ func (d *Daemon) SetDefaultTimeout(dur time.Duration) error {
 	cfgPath := d.cfgPath
 	d.mu.Unlock()
 	return config.Save(cfg, cfgPath)
+}
+
+func (d *Daemon) SetWorkspaceLabel(ws int, label string) error {
+	d.mu.Lock()
+	if d.cfg.Workspaces == nil {
+		d.cfg.Workspaces = make(map[string]string)
+	}
+	key := fmt.Sprintf("%d", ws)
+	if label == "" {
+		delete(d.cfg.Workspaces, key)
+	} else {
+		d.cfg.Workspaces[key] = label
+	}
+	cfg := d.cfg
+	cfgPath := d.cfgPath
+	d.mu.Unlock()
+	return config.Save(cfg, cfgPath)
+}
+
+func (d *Daemon) CfgPath() string {
+	return d.cfgPath
 }

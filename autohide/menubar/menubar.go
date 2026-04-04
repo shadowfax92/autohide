@@ -1,9 +1,13 @@
 package menubar
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 
 	"autohide/config"
@@ -11,6 +15,42 @@ import (
 
 	"github.com/caseymrm/menuet"
 )
+
+// workspaceEmojis is the pool of emojis randomly assigned to workspaces.
+var workspaceEmojis = []string{
+	"🔵", "🟢", "🟡", "🟠", "🔴", "🟣", "⚪",
+	"💎", "🔥", "⚡", "🌊", "🌿", "🎵", "🚀",
+	"💡", "🎨", "📦", "🔧", "📡", "🏗️", "🧪",
+}
+
+// emojiAssignments caches which emoji was assigned to each workspace number.
+var (
+	emojiMu          sync.Mutex
+	emojiAssignments = map[int]string{}
+)
+
+// workspaceEmoji returns a stable random emoji for a given workspace number.
+func workspaceEmoji(ws int) string {
+	emojiMu.Lock()
+	defer emojiMu.Unlock()
+
+	if e, ok := emojiAssignments[ws]; ok {
+		return e
+	}
+	// Pick a deterministic-ish random emoji seeded by workspace number
+	idx := ws % len(workspaceEmojis)
+	emojiAssignments[ws] = workspaceEmojis[idx]
+	return workspaceEmojis[idx]
+}
+
+// randomEmoji picks a truly random emoji from the pool.
+func randomEmoji() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(workspaceEmojis))))
+	if err != nil {
+		return "🔵"
+	}
+	return workspaceEmojis[n.Int64()]
+}
 
 var dm *daemon.Daemon
 
@@ -26,22 +66,27 @@ func Run(d *daemon.Daemon) {
 
 func menuTitle() string {
 	// Determine state emoji
-	emoji := "🫥"
+	stateEmoji := "🫥"
 	paused, _ := dm.IsPaused()
 	if paused {
-		emoji = "⏸"
+		stateEmoji = "⏸"
 	} else if dm.IsFocusMode() {
-		emoji = "🎯"
+		stateEmoji = "🎯"
 	}
 
 	// Append workspace label if one is configured for the current space
 	cfg := dm.Config()
-	if ws, err := daemon.GetCurrentWorkspaceNumber(); err == nil {
-		if label := cfg.WorkspaceLabel(ws); label != "" {
-			return emoji + " " + label
-		}
+	ws, err := daemon.GetCurrentWorkspaceNumber()
+	if err != nil {
+		return stateEmoji
 	}
-	return emoji
+
+	label := cfg.WorkspaceLabel(ws)
+	if label != "" {
+		return stateEmoji + " " + label
+	}
+	// Show workspace emoji + number when no label is set
+	return stateEmoji + " " + workspaceEmoji(ws) + strconv.Itoa(ws)
 }
 
 func titleUpdater() {
@@ -179,9 +224,9 @@ func workspaceSubmenuTitle(cfg *config.Config) string {
 	}
 	label := cfg.WorkspaceLabel(currentWs)
 	if label != "" {
-		return fmt.Sprintf("Workspace %d: %s", currentWs, label)
+		return fmt.Sprintf("%s %d: %s", workspaceEmoji(currentWs), currentWs, label)
 	}
-	return fmt.Sprintf("Workspace %d", currentWs)
+	return fmt.Sprintf("%s Workspace %d", workspaceEmoji(currentWs), currentWs)
 }
 
 func workspaceItems(cfg *config.Config) []menuet.MenuItem {
@@ -190,32 +235,95 @@ func workspaceItems(cfg *config.Config) []menuet.MenuItem {
 
 	var items []menuet.MenuItem
 
-	// Show current workspace at top
-	items = append(items, menuet.MenuItem{
-		Text: fmt.Sprintf("Current: Workspace %d", currentWs),
-	})
+	// Current workspace header
+	currentLabel := cfg.WorkspaceLabel(currentWs)
+	if currentLabel != "" {
+		items = append(items, menuet.MenuItem{
+			Text: fmt.Sprintf("%s %d: %s", workspaceEmoji(currentWs), currentWs, currentLabel),
+		})
+	} else {
+		items = append(items, menuet.MenuItem{
+			Text: fmt.Sprintf("%s Workspace %d (no label)", workspaceEmoji(currentWs), currentWs),
+		})
+	}
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})
 
-	// List all configured workspace labels sorted by number
-	if len(wsMap) == 0 {
-		items = append(items, menuet.MenuItem{Text: "No labels configured"})
-		items = append(items, menuet.MenuItem{Text: "Use: autohide workspace set <num> <label>"})
-		return items
-	}
+	// Rename action for current workspace
+	items = append(items, menuet.MenuItem{
+		Text: "Set Label for This Workspace...",
+		Clicked: func() {
+			go promptWorkspaceLabel(currentWs, currentLabel)
+		},
+	})
 
-	nums := make([]int, 0, len(wsMap))
-	for n := range wsMap {
-		nums = append(nums, n)
-	}
-	sort.Ints(nums)
-
-	for _, n := range nums {
-		text := fmt.Sprintf("%d: %s", n, wsMap[n])
+	// Clear label for current workspace (only if one exists)
+	if currentLabel != "" {
 		items = append(items, menuet.MenuItem{
-			Text:  text,
-			State: n == currentWs,
+			Text: "Clear Label",
+			Clicked: func() {
+				dm.SetWorkspaceLabel(currentWs, "")
+				menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
+			},
 		})
 	}
 
+	// Randomize emoji for current workspace
+	items = append(items, menuet.MenuItem{
+		Text: "Shuffle Emoji",
+		Clicked: func() {
+			emojiMu.Lock()
+			emojiAssignments[currentWs] = randomEmoji()
+			emojiMu.Unlock()
+			menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
+		},
+	})
+
+	items = append(items, menuet.MenuItem{Type: menuet.Separator})
+
+	// List all configured workspace labels sorted by number
+	if len(wsMap) > 0 {
+		nums := make([]int, 0, len(wsMap))
+		for n := range wsMap {
+			nums = append(nums, n)
+		}
+		sort.Ints(nums)
+
+		for _, n := range nums {
+			text := fmt.Sprintf("%s %d: %s", workspaceEmoji(n), n, wsMap[n])
+			isCurrent := n == currentWs
+			wsNum := n
+			wsLabel := wsMap[n]
+			items = append(items, menuet.MenuItem{
+				Text:  text,
+				State: isCurrent,
+				Clicked: func() {
+					go promptWorkspaceLabel(wsNum, wsLabel)
+				},
+			})
+		}
+	}
+
 	return items
+}
+
+// promptWorkspaceLabel shows a native dialog to set/rename a workspace label.
+func promptWorkspaceLabel(ws int, currentLabel string) {
+	placeholder := "e.g. Building API"
+	if currentLabel != "" {
+		placeholder = currentLabel
+	}
+
+	response := menuet.App().Alert(menuet.Alert{
+		MessageText:     fmt.Sprintf("Label for Workspace %d", ws),
+		InformativeText: "Enter a short name for this workspace. It will show in the menu bar.",
+		Inputs:          []string{placeholder},
+		Buttons:         []string{"Save", "Cancel"},
+	})
+
+	// User clicked Save and provided input
+	if response.Button == 0 && len(response.Inputs) > 0 && response.Inputs[0] != "" {
+		label := response.Inputs[0]
+		dm.SetWorkspaceLabel(ws, label)
+		menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
+	}
 }
