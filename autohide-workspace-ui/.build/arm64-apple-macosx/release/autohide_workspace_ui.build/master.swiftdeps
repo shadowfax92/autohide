@@ -1,0 +1,6 @@
+version: "Apple Swift version 6.0.2 (swiftlang-6.0.2.1.2 clang-1600.0.26.4)"
+options: "89b1610d8c7bcbaf0d0c81f632978aa79a9330ed565cca3199619979c1541d5a"
+build_start_time: [1775693681, 493828000]
+build_end_time: [1775693684, 792358000]
+inputs:
+  "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/Sources/main.swift": [1775693655, 284346565]

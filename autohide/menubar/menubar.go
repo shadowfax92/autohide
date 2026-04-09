@@ -2,6 +2,7 @@ package menubar
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -20,15 +21,19 @@ import (
 var workspaceEmojis = []string{
 	// nature & elements
 	"🔥", "⚡", "🌊", "🌿", "🌸", "🍀", "🌙", "☀️", "❄️", "🌈",
-	"🌋", "🍃", "🌻", "🌴", "🍄", "🦋", "🐝", "🐙", "🦊", "🐺",
+	"🌋", "🍃", "🌻", "🌴", "🍄", "🪵", "🌵", "🌾", "🪷", "🌲",
+	"🌺", "🌼", "🦋", "🐝", "🐙", "🦊", "🐺", "🦉", "🦎", "🐢",
 	// objects & tools
 	"💎", "🎵", "🚀", "💡", "🎨", "📦", "🔧", "📡", "🧪", "🔬",
 	"🎯", "🎲", "🎸", "🎹", "📸", "🔮", "💫", "🧲", "⚙️", "🛠️",
+	"🧰", "🧠", "⌘", "🖥️", "💻", "📱", "🎛️", "📍", "🗂️", "📝",
 	// food & drink
 	"🍕", "🍊", "🍋", "🍇", "🍉", "🫐", "🥑", "🌶️", "☕", "🧁",
+	"🥐", "🍜", "🍣", "🥥", "🫚", "🍎", "🥨", "🧃", "🍵", "🧋",
 	// symbols & misc
 	"⭐", "✨", "🏔️", "🏝️", "🎪", "🏗️", "🗿", "🧊", "🪐", "🛸",
 	"⚓", "🎭", "🧬", "🎠", "🛡️", "🪄", "🏄", "🧭", "🪩", "🫧",
+	"🔆", "🕹️", "🎈", "🪁", "🏁", "🏛️", "🎬", "📚", "🃏", "🎟️",
 }
 
 // emojiAssignments caches which emoji was assigned to each workspace number.
@@ -65,6 +70,9 @@ var dm *daemon.Daemon
 func Run(d *daemon.Daemon) {
 	dm = d
 	app := menuet.App()
+	if err := registerHotkeys(); err != nil {
+		fmt.Fprintf(os.Stderr, "hotkeys unavailable: %v\n", err)
+	}
 	app.SetMenuState(&menuet.MenuState{Title: menuTitle()})
 	app.Children = menuItems
 	app.Label = "com.autohide.daemon"
@@ -259,6 +267,13 @@ func workspaceItems(cfg *config.Config) []menuet.MenuItem {
 
 	// Rename action for current workspace
 	items = append(items, menuet.MenuItem{
+		Text: "Quick Switch...",
+		Clicked: func() {
+			go openWorkspaceSwitcher()
+		},
+	})
+
+	items = append(items, menuet.MenuItem{
 		Text: "Set Label for This Workspace...",
 		Clicked: func() {
 			go promptWorkspaceLabel(currentWs, currentLabel)
@@ -301,12 +316,13 @@ func workspaceItems(cfg *config.Config) []menuet.MenuItem {
 			text := fmt.Sprintf("%s %d: %s", workspaceEmoji(n), n, wsMap[n])
 			isCurrent := n == currentWs
 			wsNum := n
-			wsLabel := wsMap[n]
 			items = append(items, menuet.MenuItem{
 				Text:  text,
 				State: isCurrent,
 				Clicked: func() {
-					go promptWorkspaceLabel(wsNum, wsLabel)
+					if err := daemon.SwitchToWorkspace(wsNum); err == nil {
+						menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
+					}
 				},
 			})
 		}
@@ -330,9 +346,20 @@ func promptWorkspaceLabel(ws int, currentLabel string) {
 	})
 
 	// User clicked Save and provided input
-	if response.Button == 0 && len(response.Inputs) > 0 && response.Inputs[0] != "" {
-		label := response.Inputs[0]
+	if response.Button == 0 && len(response.Inputs) > 0 {
+		label := daemon.NormalizeWorkspaceLabel(response.Inputs[0])
+		if label == "" {
+			return
+		}
 		dm.SetWorkspaceLabel(ws, label)
 		menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
 	}
+}
+
+func openWorkspaceSwitcher() {
+	err := daemon.PickWorkspaceAndSwitch(dm.Config())
+	if err != nil && !errors.Is(err, daemon.ErrWorkspacePickerCanceled) {
+		fmt.Fprintf(os.Stderr, "workspace switcher: %v\n", err)
+	}
+	menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
 }

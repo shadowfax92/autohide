@@ -1,5 +1,6 @@
 APP_NAME     := autohide
 OVERLAY_NAME := autohide-overlay
+WORKSPACE_UI_NAME := autohide-workspace-ui
 VERSION      := 0.1.0
 BUILD_DIR    := $(CURDIR)/build
 APP_DIR      := $(HOME)/Applications/autohide.app
@@ -9,11 +10,11 @@ GOBIN        := $(shell go env GOPATH)/bin
 GOARCH  := $(shell go env GOARCH)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build build-cli build-overlay install uninstall clean tidy
+.PHONY: all build build-cli build-overlay build-workspace-ui install uninstall clean tidy
 
 all: build
 
-build: build-cli build-overlay
+build: build-cli build-overlay build-workspace-ui
 
 build-cli:
 	@mkdir -p $(BUILD_DIR)
@@ -24,10 +25,16 @@ build-overlay:
 	cd $(OVERLAY_NAME) && swift build -c release
 	cp $(OVERLAY_NAME)/.build/release/$(OVERLAY_NAME) $(BUILD_DIR)/$(OVERLAY_NAME)
 
+build-workspace-ui:
+	@mkdir -p $(BUILD_DIR)
+	cd $(WORKSPACE_UI_NAME) && swift build -c release
+	cp $(WORKSPACE_UI_NAME)/.build/release/$(WORKSPACE_UI_NAME) $(BUILD_DIR)/$(WORKSPACE_UI_NAME)
+
 install: build
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
+	cp $(BUILD_DIR)/$(WORKSPACE_UI_NAME) $(APP_DIR)/Contents/MacOS/$(WORKSPACE_UI_NAME)
 	codesign --force --sign - $(APP_BIN)
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n\
@@ -59,6 +66,7 @@ uninstall:
 clean:
 	rm -rf $(BUILD_DIR)
 	-cd $(OVERLAY_NAME) && swift package clean 2>/dev/null || true
+	-cd $(WORKSPACE_UI_NAME) && swift package clean 2>/dev/null || true
 
 tidy:
 	cd $(APP_NAME) && go mod tidy

@@ -1,0 +1,12 @@
+{
+  "": {
+    "dependencies": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/autohide_workspace_ui.d",
+    "object": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/autohide_workspace_ui.o",
+    "swift-dependencies": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/master.swiftdeps"
+  },
+  "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/Sources/main.swift": {
+    "object": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/main.swift.o",
+    "swiftmodule": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/felarof01/Workspaces/build/SELF_IMPROVE/mac-autohide/autohide-workspace-ui/.build/arm64-apple-macosx/release/autohide_workspace_ui.build/main.swiftdeps"
+  }
+}

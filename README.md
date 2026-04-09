@@ -81,6 +81,27 @@ autohide overlay stop                     # end session, dismiss widget
 
 When the timer hits 0:00, the overlay turns red and stays visible until you `stop` or start a new session.
 
+### Workspace labels and switching
+
+The menu bar can show a label for the current macOS workspace so you can tell at a glance what that desktop is for.
+
+```bash
+autohide workspace current                   # show the current workspace + label
+autohide workspace list                      # list workspaces on the current display
+autohide workspace name "Product Strategy"  # name the current workspace
+autohide workspace set 3 "BrowserOS"        # label a specific workspace
+autohide workspace clear 3                  # remove a label
+autohide workspace switch 3                 # jump to workspace 3
+autohide workspace switch "Emails"          # jump by exact label
+autohide workspace switch --fuzzy           # open the native workspace picker
+```
+
+Global shortcuts while the menu bar app is running:
+
+- `Control+Shift+O` opens the workspace switcher
+- `Hyper+O` also opens the workspace switcher
+- `Hyper+N` names the current workspace
+
 ## Configuration
 
 Config lives at `~/.config/autohide/config.toml` and is created with defaults on first run.
