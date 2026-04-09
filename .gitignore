@@ -1,6 +1,7 @@
 build/
 autohide/build/
 autohide-overlay/.build/
+autohide-workspace-ui/.build/
 *.exe
 *.dylib
 .DS_Store
