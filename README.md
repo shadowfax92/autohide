@@ -85,6 +85,14 @@ When the timer hits 0:00, the overlay turns red and stays visible until you `sto
 
 The menu bar can show a label for the current macOS workspace so you can tell at a glance what that desktop is for.
 
+When you set or rename a workspace label, autohide also:
+
+- picks a random wallpaper from `/Users/felarof01/Desktop/3-Resources/wallpapers`
+- writes the label into all four corners with high-contrast text
+- applies that wallpaper to both displays for the target workspace
+
+Clearing a workspace label restores a plain wallpaper from the same folder.
+
 ```bash
 autohide workspace current                   # show the current workspace + label
 autohide workspace list                      # list workspaces on the current display
@@ -101,6 +109,8 @@ Global shortcuts while the menu bar app is running:
 - `Control+Shift+O` opens the workspace switcher
 - `Hyper+O` also opens the workspace switcher
 - `Hyper+N` names the current workspace
+
+Non-current workspace switching and wallpaper updates require Accessibility access for `autohide` in System Settings > Privacy & Security > Accessibility, because macOS treats Space switching as synthetic keyboard input.
 
 ## Configuration
 

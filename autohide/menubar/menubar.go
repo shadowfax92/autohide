@@ -285,7 +285,10 @@ func workspaceItems(cfg *config.Config) []menuet.MenuItem {
 		items = append(items, menuet.MenuItem{
 			Text: "Clear Label",
 			Clicked: func() {
-				dm.SetWorkspaceLabel(currentWs, "")
+				if err := dm.SetWorkspaceLabel(currentWs, ""); err != nil {
+					fmt.Fprintf(os.Stderr, "clear workspace label: %v\n", err)
+					return
+				}
 				menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
 			},
 		})
@@ -351,7 +354,10 @@ func promptWorkspaceLabel(ws int, currentLabel string) {
 		if label == "" {
 			return
 		}
-		dm.SetWorkspaceLabel(ws, label)
+		if err := dm.SetWorkspaceLabel(ws, label); err != nil {
+			fmt.Fprintf(os.Stderr, "set workspace label: %v\n", err)
+			return
+		}
 		menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
 	}
 }

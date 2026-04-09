@@ -50,3 +50,8 @@ type OverlayStatusData struct {
 type FocusModeData struct {
 	Active bool `json:"active"`
 }
+
+type WorkspaceLabelData struct {
+	Workspace int    `json:"workspace"`
+	Label     string `json:"label,omitempty"`
+}

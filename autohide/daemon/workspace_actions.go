@@ -1,5 +1,63 @@
 package daemon
 
+/*
+#cgo LDFLAGS: -framework ApplicationServices
+
+#include <ApplicationServices/ApplicationServices.h>
+#include <unistd.h>
+
+static bool autohideIsAccessibilityTrusted(void) {
+	return AXIsProcessTrusted();
+}
+
+static void autohideRequestAccessibilityPermission(void) {
+	const void *keys[] = { kAXTrustedCheckOptionPrompt };
+	const void *values[] = { kCFBooleanTrue };
+	CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	AXIsProcessTrustedWithOptions(options);
+	CFRelease(options);
+}
+
+static void postWorkspaceSwitchKey(int keyCode) {
+	CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+	if (!source) {
+		return;
+	}
+
+	CGEventRef controlDown = CGEventCreateKeyboardEvent(source, (CGKeyCode)59, true);
+	CGEventRef arrowDown = CGEventCreateKeyboardEvent(source, (CGKeyCode)keyCode, true);
+	CGEventRef arrowUp = CGEventCreateKeyboardEvent(source, (CGKeyCode)keyCode, false);
+	CGEventRef controlUp = CGEventCreateKeyboardEvent(source, (CGKeyCode)59, false);
+
+	if (!controlDown || !arrowDown || !arrowUp || !controlUp) {
+		if (controlDown) CFRelease(controlDown);
+		if (arrowDown) CFRelease(arrowDown);
+		if (arrowUp) CFRelease(arrowUp);
+		if (controlUp) CFRelease(controlUp);
+		CFRelease(source);
+		return;
+	}
+
+	CGEventSetFlags(arrowDown, kCGEventFlagMaskControl);
+	CGEventSetFlags(arrowUp, kCGEventFlagMaskControl);
+
+	CGEventPost(kCGHIDEventTap, controlDown);
+	usleep(10000);
+	CGEventPost(kCGHIDEventTap, arrowDown);
+	usleep(10000);
+	CGEventPost(kCGHIDEventTap, arrowUp);
+	usleep(10000);
+	CGEventPost(kCGHIDEventTap, controlUp);
+
+	CFRelease(controlDown);
+	CFRelease(arrowDown);
+	CFRelease(arrowUp);
+	CFRelease(controlUp);
+	CFRelease(source);
+}
+*/
+import "C"
+
 import (
 	"bytes"
 	"encoding/json"
@@ -11,6 +69,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"autohide/config"
 )
@@ -143,6 +202,10 @@ func SwitchToWorkspace(target int) error {
 	if target == current {
 		return nil
 	}
+	if !accessibilityTrusted() {
+		promptForAccessibilityPermission()
+		return fmt.Errorf("switch to workspace %d failed (grant Accessibility access to autohide in System Settings > Privacy & Security > Accessibility)", target)
+	}
 
 	keyCode := 124
 	steps := target - current
@@ -151,17 +214,28 @@ func SwitchToWorkspace(target int) error {
 		steps = -steps
 	}
 
-	script := fmt.Sprintf(`
-repeat %d times
-	tell application "System Events" to key code %d using control down
-	delay 0.12
-end repeat
-`, steps, keyCode)
+	for step := 0; step < steps; step++ {
+		C.postWorkspaceSwitchKey(C.int(keyCode))
+		time.Sleep(120 * time.Millisecond)
+	}
 
-	if err := exec.Command("osascript", "-e", script).Run(); err != nil {
-		return fmt.Errorf("switch to workspace %d: %w", target, err)
+	time.Sleep(180 * time.Millisecond)
+	newCurrent, _, err := GetWorkspaceInfo()
+	if err != nil {
+		return err
+	}
+	if newCurrent != target {
+		return fmt.Errorf("switch to workspace %d failed (grant Accessibility access to autohide in System Settings > Privacy & Security > Accessibility)", target)
 	}
 	return nil
+}
+
+func accessibilityTrusted() bool {
+	return bool(C.autohideIsAccessibilityTrusted())
+}
+
+func promptForAccessibilityPermission() {
+	C.autohideRequestAccessibilityPermission()
 }
 
 func findWorkspacePickerBinary() (string, error) {

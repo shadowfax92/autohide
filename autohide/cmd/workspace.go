@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"autohide/config"
 	"autohide/daemon"
+	"autohide/ipc"
 
 	"github.com/spf13/cobra"
 )
@@ -135,14 +138,13 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 	}
 
 	key := strconv.Itoa(num)
-	cfg, p := loadConfig()
+	cfg, _ := loadConfig()
 	if _, ok := cfg.Workspaces[key]; !ok {
 		fmt.Printf("Workspace %d has no label.\n", num)
 		return nil
 	}
 
-	delete(cfg.Workspaces, key)
-	if err := config.Save(cfg, p); err != nil {
+	if err := saveWorkspaceLabel(num, ""); err != nil {
 		return err
 	}
 	fmt.Printf("Cleared label for workspace %d.\n", num)
@@ -226,12 +228,39 @@ func runWorkspaceSwitch(cmd *cobra.Command, args []string) error {
 }
 
 func saveWorkspaceLabel(num int, label string) error {
-	cfg, p := loadConfig()
-	if cfg.Workspaces == nil {
-		cfg.Workspaces = make(map[string]string)
+	if configPath() == "" && daemonReachable() {
+		return saveWorkspaceLabelViaDaemon(num, label)
 	}
-	cfg.Workspaces[strconv.Itoa(num)] = label
-	return config.Save(cfg, p)
+
+	cfg, p := loadConfig()
+	return daemon.UpdateWorkspaceLabel(cfg, p, num, label)
+}
+
+func saveWorkspaceLabelViaDaemon(num int, label string) error {
+	client := ipc.NewClient(config.SocketPath())
+	resp, err := client.Send(ipc.Request{
+		Command: "workspace_set_label",
+		Args: map[string]string{
+			"workspace": strconv.Itoa(num),
+			"label":     label,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon: %s", resp.Error)
+	}
+	return nil
+}
+
+func daemonReachable() bool {
+	conn, err := net.DialTimeout("unix", config.SocketPath(), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func resolveWorkspaceTarget(cfg *config.Config, raw string) (int, error) {

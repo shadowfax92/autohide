@@ -7,6 +7,7 @@ require (
 	github.com/caseymrm/menuet v1.0.3
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/image v0.36.0
 )
 
 require (
@@ -16,4 +17,5 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 )

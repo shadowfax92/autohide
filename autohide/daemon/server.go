@@ -105,6 +105,8 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleFocusHide()
 	case "overlay_show":
 		resp = s.handleFocusShow()
+	case "workspace_set_label":
+		resp = s.handleWorkspaceSetLabel(req)
 	case "focus_on":
 		s.daemon.SetFocusMode(true)
 		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: true}}
@@ -250,6 +252,31 @@ func (s *Server) handleFocusShow() ipc.Response {
 		return ipc.Response{Error: err.Error()}
 	}
 	return ipc.Response{OK: true, Data: s.focusStatusData()}
+}
+
+func (s *Server) handleWorkspaceSetLabel(req ipc.Request) ipc.Response {
+	rawWorkspace := req.Args["workspace"]
+	if rawWorkspace == "" {
+		return ipc.Response{Error: "workspace required"}
+	}
+
+	workspace, err := strconv.Atoi(rawWorkspace)
+	if err != nil || workspace < 1 {
+		return ipc.Response{Error: fmt.Sprintf("invalid workspace: %s", rawWorkspace)}
+	}
+
+	label := NormalizeWorkspaceLabel(req.Args["label"])
+	if err := s.daemon.SetWorkspaceLabel(workspace, label); err != nil {
+		return ipc.Response{Error: err.Error()}
+	}
+
+	return ipc.Response{
+		OK: true,
+		Data: ipc.WorkspaceLabelData{
+			Workspace: workspace,
+			Label:     label,
+		},
+	}
 }
 
 func (s *Server) focusStatusData() ipc.OverlayStatusData {
