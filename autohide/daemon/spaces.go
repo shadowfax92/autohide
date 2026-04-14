@@ -57,7 +57,12 @@ static void getWorkspaceInfo(int *current, int *count) {
 */
 import "C"
 
-import "fmt"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+)
 
 type Workspace struct {
 	Number  int
@@ -68,10 +73,14 @@ func GetWorkspaceInfo() (int, int, error) {
 	var current C.int
 	var total C.int
 	C.getWorkspaceInfo(&current, &total)
-	if current == 0 || total == 0 {
-		return 0, 0, fmt.Errorf("could not determine current workspace")
+	if current > 0 && total > 0 {
+		return int(current), int(total), nil
 	}
-	return int(current), int(total), nil
+	fallbackCurrent, fallbackTotal, err := workspaceInfoFromDefaults()
+	if err == nil {
+		return fallbackCurrent, fallbackTotal, nil
+	}
+	return 0, 0, fmt.Errorf("could not determine current workspace")
 }
 
 // GetCurrentWorkspaceNumber returns the 1-based macOS workspace (Space) number.
@@ -94,4 +103,63 @@ func ListCurrentDisplayWorkspaces() ([]Workspace, int, error) {
 		})
 	}
 	return workspaces, current, nil
+}
+
+type spacesDomain struct {
+	SpacesDisplayConfiguration spacesDisplayConfiguration `json:"SpacesDisplayConfiguration"`
+}
+
+type spacesDisplayConfiguration struct {
+	ManagementData spacesManagementData `json:"Management Data"`
+}
+
+type spacesManagementData struct {
+	Monitors []spacesMonitor `json:"Monitors"`
+}
+
+type spacesMonitor struct {
+	CurrentSpace *managedSpace  `json:"Current Space,omitempty"`
+	Spaces       []managedSpace `json:"Spaces,omitempty"`
+}
+
+type managedSpace struct {
+	ManagedSpaceID int64 `json:"ManagedSpaceID"`
+}
+
+func workspaceInfoFromDefaults() (int, int, error) {
+	exportCmd := exec.Command("defaults", "export", "com.apple.spaces", "-")
+	plistXML, err := exportCmd.Output()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	jsonCmd := exec.Command("plutil", "-convert", "json", "-o", "-", "-")
+	jsonCmd.Stdin = bytes.NewReader(plistXML)
+	spaceJSON, err := jsonCmd.Output()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return parseWorkspaceInfoFromSpacesJSON(spaceJSON)
+}
+
+func parseWorkspaceInfoFromSpacesJSON(data []byte) (int, int, error) {
+	var domain spacesDomain
+	if err := json.Unmarshal(data, &domain); err != nil {
+		return 0, 0, fmt.Errorf("parse spaces json: %w", err)
+	}
+
+	for _, monitor := range domain.SpacesDisplayConfiguration.ManagementData.Monitors {
+		if monitor.CurrentSpace == nil || len(monitor.Spaces) == 0 {
+			continue
+		}
+
+		for idx, space := range monitor.Spaces {
+			if space.ManagedSpaceID == monitor.CurrentSpace.ManagedSpaceID {
+				return idx + 1, len(monitor.Spaces), nil
+			}
+		}
+	}
+
+	return 0, 0, fmt.Errorf("current space not found in defaults export")
 }

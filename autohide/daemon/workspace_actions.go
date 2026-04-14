@@ -1,5 +1,76 @@
 package daemon
 
+/*
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation
+
+#include <CoreGraphics/CoreGraphics.h>
+#include <CoreFoundation/CoreFoundation.h>
+
+typedef int CGSConnectionID;
+extern CGSConnectionID CGSMainConnectionID(void);
+extern uint64_t CGSGetActiveSpace(CGSConnectionID cid);
+extern CFArrayRef CGSCopyManagedDisplaySpaces(CGSConnectionID cid);
+extern void CGSManagedDisplaySetCurrentSpace(CGSConnectionID cid, CFStringRef display, uint64_t space);
+
+static bool switchToWorkspaceIndex(int target) {
+	CGSConnectionID conn = CGSMainConnectionID();
+	if (conn == 0) return false;
+
+	uint64_t activeSpace = CGSGetActiveSpace(conn);
+	CFArrayRef displaySpaces = CGSCopyManagedDisplaySpaces(conn);
+	if (!displaySpaces) return false;
+
+	CFIndex displayCount = CFArrayGetCount(displaySpaces);
+	for (CFIndex d = 0; d < displayCount; d++) {
+		CFDictionaryRef display = CFArrayGetValueAtIndex(displaySpaces, d);
+		CFArrayRef spaces = CFDictionaryGetValue(display, CFSTR("Spaces"));
+		if (!spaces) continue;
+
+		CFIndex spaceCount = CFArrayGetCount(spaces);
+		CFIndex activeIndex = -1;
+		for (CFIndex i = 0; i < spaceCount; i++) {
+			CFDictionaryRef space = CFArrayGetValueAtIndex(spaces, i);
+			CFNumberRef idRef = CFDictionaryGetValue(space, CFSTR("ManagedSpaceID"));
+			if (!idRef) continue;
+
+			int64_t spaceId = 0;
+			CFNumberGetValue(idRef, kCFNumberSInt64Type, &spaceId);
+			if ((uint64_t)spaceId == activeSpace) {
+				activeIndex = i;
+				break;
+			}
+		}
+		if (activeIndex < 0) continue;
+		if (target < 1 || target > spaceCount) {
+			CFRelease(displaySpaces);
+			return false;
+		}
+		if ((CFIndex)(target - 1) == activeIndex) {
+			CFRelease(displaySpaces);
+			return true;
+		}
+
+		CFDictionaryRef targetSpace = CFArrayGetValueAtIndex(spaces, target - 1);
+		CFNumberRef targetIDRef = CFDictionaryGetValue(targetSpace, CFSTR("ManagedSpaceID"));
+		CFStringRef displayID = CFDictionaryGetValue(display, CFSTR("Display Identifier"));
+		if (!targetIDRef || !displayID) {
+			CFRelease(displaySpaces);
+			return false;
+		}
+
+		int64_t targetSpaceID = 0;
+		CFNumberGetValue(targetIDRef, kCFNumberSInt64Type, &targetSpaceID);
+		CGSManagedDisplaySetCurrentSpace(conn, displayID, (uint64_t)targetSpaceID);
+		CFRelease(displaySpaces);
+		return true;
+	}
+
+	CFRelease(displaySpaces);
+	return false;
+}
+*/
+import "C"
+
 import (
 	"bytes"
 	"encoding/json"
@@ -11,6 +82,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"autohide/config"
 )
@@ -133,6 +205,10 @@ func PickWorkspaceAndSwitch(cfg *config.Config) error {
 }
 
 func SwitchToWorkspace(target int) error {
+	return switchToWorkspaceDirect(target)
+}
+
+func switchToWorkspaceDirect(target int) error {
 	current, total, err := GetWorkspaceInfo()
 	if err != nil {
 		return err
@@ -143,23 +219,17 @@ func SwitchToWorkspace(target int) error {
 	if target == current {
 		return nil
 	}
-
-	keyCode := 124
-	steps := target - current
-	if steps < 0 {
-		keyCode = 123
-		steps = -steps
+	if ok := bool(C.switchToWorkspaceIndex(C.int(target))); !ok {
+		return fmt.Errorf("switch to workspace %d failed", target)
 	}
+	time.Sleep(180 * time.Millisecond)
 
-	script := fmt.Sprintf(`
-repeat %d times
-	tell application "System Events" to key code %d using control down
-	delay 0.12
-end repeat
-`, steps, keyCode)
-
-	if err := exec.Command("osascript", "-e", script).Run(); err != nil {
-		return fmt.Errorf("switch to workspace %d: %w", target, err)
+	newCurrent, _, err := GetWorkspaceInfo()
+	if err != nil {
+		return err
+	}
+	if newCurrent != target {
+		return fmt.Errorf("switch to workspace %d failed", target)
 	}
 	return nil
 }
