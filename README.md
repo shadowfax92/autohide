@@ -146,10 +146,13 @@ autohide install     # install launchd plist + start on login
 autohide uninstall   # remove plist + stop daemon
 autohide start       # start via launchd
 autohide stop        # stop via launchd
+autohide restart     # restart via launchd
 autohide daemon      # run in foreground (for debugging)
 ```
 
 Logs: `~/.config/autohide/daemon.log`
+
+The menu bar dropdown also includes **Restart Daemon** for quickly refreshing the running app after a stuck state.
 
 ## Project structure
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"sync"
@@ -182,6 +183,13 @@ func menuItems() []menuet.MenuItem {
 	})
 
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})
+
+	items = append(items, menuet.MenuItem{
+		Text: "Restart Daemon",
+		Clicked: func() {
+			go restartDaemonFromMenu()
+		},
+	})
 
 	items = append(items, menuet.MenuItem{
 		Text: "Quit",
@@ -362,4 +370,18 @@ func openWorkspaceSwitcher() {
 		fmt.Fprintf(os.Stderr, "workspace switcher: %v\n", err)
 	}
 	menuet.App().SetMenuState(&menuet.MenuState{Title: menuTitle()})
+}
+
+func restartDaemonFromMenu() {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "restart daemon: %v\n", err)
+		return
+	}
+	cmd := exec.Command(exe, "restart")
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "restart daemon: %v\n", err)
+		return
+	}
+	go cmd.Wait()
 }
