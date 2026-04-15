@@ -23,7 +23,7 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	plist := plistPath()
 
 	uid := strconv.Itoa(os.Getuid())
-	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/com.autohide.daemon").Run()
+	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run()
 	_ = exec.Command("launchctl", "unload", plist).Run()
 
 	if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -39,9 +40,29 @@ type MenubarConfig struct {
 }
 
 type Config struct {
-	General GeneralConfig        `toml:"general"`
-	Apps    map[string]AppConfig `toml:"apps"`
-	Menubar MenubarConfig        `toml:"menubar"`
+	General    GeneralConfig        `toml:"general"`
+	Apps       map[string]AppConfig `toml:"apps"`
+	Menubar    MenubarConfig        `toml:"menubar"`
+	Workspaces map[string]string    `toml:"workspaces"`
+}
+
+// WorkspaceLabel returns the label for a given 1-based workspace number.
+func (c *Config) WorkspaceLabel(num int) string {
+	if c.Workspaces != nil {
+		return c.Workspaces[strconv.Itoa(num)]
+	}
+	return ""
+}
+
+// WorkspaceMap returns workspaces as a map of int->string for convenient iteration.
+func (c *Config) WorkspaceMap() map[int]string {
+	result := make(map[int]string)
+	for k, v := range c.Workspaces {
+		if n, err := strconv.Atoi(k); err == nil {
+			result[n] = v
+		}
+	}
+	return result
 }
 
 func Default() *Config {
@@ -62,6 +83,7 @@ func Default() *Config {
 				{5 * time.Minute},
 			},
 		},
+		Workspaces: map[string]string{},
 	}
 }
 
@@ -99,6 +121,9 @@ func Load(path string) (*Config, error) {
 
 	if cfg.Apps == nil {
 		cfg.Apps = make(map[string]AppConfig)
+	}
+	if cfg.Workspaces == nil {
+		cfg.Workspaces = make(map[string]string)
 	}
 
 	return cfg, nil
