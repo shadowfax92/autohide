@@ -9,6 +9,10 @@ GOBIN        := $(shell go env GOPATH)/bin
 
 GOARCH  := $(shell go env GOARCH)
 LDFLAGS := -s -w -X main.version=$(VERSION)
+CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/ {print $$2; exit}')
+ifeq ($(strip $(CODESIGN_IDENTITY)),)
+CODESIGN_IDENTITY := -
+endif
 
 .PHONY: all build build-cli build-overlay build-workspace-ui install uninstall clean tidy
 
@@ -35,7 +39,6 @@ install: build
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	cp $(BUILD_DIR)/$(WORKSPACE_UI_NAME) $(APP_DIR)/Contents/MacOS/$(WORKSPACE_UI_NAME)
-	codesign --force --sign - $(APP_BIN)
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n\
 	  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
@@ -51,6 +54,7 @@ install: build
 	    <true/>\n\
 	</dict>\n\
 	</plist>\n' > $(APP_DIR)/Contents/Info.plist
+	codesign --force --deep --sign "$(CODESIGN_IDENTITY)" $(APP_DIR)
 	ln -sf $(APP_BIN) $(GOBIN)/$(APP_NAME)
 	-$(APP_BIN) uninstall 2>/dev/null || true
 	$(APP_BIN) install
