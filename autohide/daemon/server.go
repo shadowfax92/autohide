@@ -171,8 +171,6 @@ func (s *Server) handleList() ipc.Response {
 		}
 		apps = append(apps, ipc.AppInfo{
 			Name:          a.Name,
-			WindowID:      a.WindowID,
-			WindowTitle:   a.WindowTitle,
 			LastActive:    a.LastActive.Format(time.RFC3339),
 			Timeout:       a.Timeout.String(),
 			Hidden:        a.Hidden,

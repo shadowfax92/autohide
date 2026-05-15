@@ -11,11 +11,11 @@ import (
 )
 
 type Daemon struct {
-	cfgPath string
-	cfg     *config.Config
-	tracker *Tracker
-	focus   *FocusManager
-	logger  zerolog.Logger
+	cfgPath   string
+	cfg       *config.Config
+	tracker   *Tracker
+	focus     *FocusManager
+	logger    zerolog.Logger
 
 	mu        sync.RWMutex
 	paused    bool
@@ -85,9 +85,15 @@ func (d *Daemon) tick() {
 		d.mu.Unlock()
 	}
 
-	frontmost, windows, err := GetWindowSnapshot()
+	frontmost, err := GetFrontmostApp()
 	if err != nil {
-		d.logger.Warn().Err(err).Msg("failed to get window snapshot")
+		d.logger.Warn().Err(err).Msg("failed to get frontmost app")
+		return
+	}
+
+	visible, err := GetVisibleApps()
+	if err != nil {
+		d.logger.Warn().Err(err).Msg("failed to get visible apps")
 		return
 	}
 
@@ -98,40 +104,26 @@ func (d *Daemon) tick() {
 
 	if focusMode {
 		// Focus mode: hide everything except frontmost immediately
-		for _, window := range windows {
-			if window.ID == frontmost.ID || window.Minimized {
+		for _, name := range visible {
+			if name == frontmost {
 				continue
 			}
-			_, disabled := cfg.EffectiveTimeout(window.AppName)
+			_, disabled := cfg.EffectiveTimeout(name)
 			if disabled {
 				continue
 			}
-			d.logger.Debug().
-				Str("app", window.AppName).
-				Str("window", window.Title).
-				Msg("focus mode: hiding window")
-			if err := HideWindow(window); err != nil {
-				d.logger.Warn().
-					Err(err).
-					Str("app", window.AppName).
-					Str("window", window.Title).
-					Msg("failed to hide window")
+			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
+			if err := HideApp(name); err != nil {
+				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
 	} else {
 		// Normal mode: timeout-based hiding
-		toHide := d.tracker.UpdateWindows(cfg, frontmost, windows)
-		for _, window := range toHide {
-			d.logger.Info().
-				Str("app", window.AppName).
-				Str("window", window.Title).
-				Msg("hiding inactive window")
-			if err := HideWindow(window); err != nil {
-				d.logger.Warn().
-					Err(err).
-					Str("app", window.AppName).
-					Str("window", window.Title).
-					Msg("failed to hide window")
+		toHide := d.tracker.Update(cfg, frontmost, visible)
+		for _, name := range toHide {
+			d.logger.Info().Str("app", name).Msg("hiding inactive app")
+			if err := HideApp(name); err != nil {
+				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
 	}
