@@ -89,9 +89,12 @@ Config lives at `~/.config/autohide/config.toml` and is created with defaults on
 [general]
 default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
-system_exclude = []          # never hide these
+system_exclude = ["Finder"]  # never hide these
 
 [apps]
+  [apps.Finder]
+  disabled = true
+
   [apps.Slack]
   timeout = "5m"
 
