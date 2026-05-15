@@ -49,11 +49,9 @@ func Default() *Config {
 		General: GeneralConfig{
 			DefaultTimeout: Duration{1 * time.Minute},
 			CheckInterval:  Duration{5 * time.Second},
-			SystemExclude:  []string{"Finder"},
+			SystemExclude:  []string{},
 		},
-		Apps: map[string]AppConfig{
-			"Finder": {Disabled: true},
-		},
+		Apps: map[string]AppConfig{},
 		Menubar: MenubarConfig{
 			TimeoutPresets: []Duration{
 				{30 * time.Second},
@@ -100,6 +98,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Apps == nil {
 		cfg.Apps = make(map[string]AppConfig)
 	}
+	migrateLegacyFinderDefault(cfg)
 
 	return cfg, nil
 }
@@ -131,4 +130,36 @@ func (c *Config) EffectiveTimeout(appName string) (time.Duration, bool) {
 		}
 	}
 	return c.General.DefaultTimeout.Duration, false
+}
+
+// migrateLegacyFinderDefault removes the old generated Finder opt-out so existing
+// configs inherit the current behavior. Finder overrides with a non-legacy shape
+// are left intact because they carry explicit user intent.
+func migrateLegacyFinderDefault(cfg *Config) {
+	app, ok := cfg.Apps["Finder"]
+	if !ok || !app.Disabled || app.Timeout.Duration != 0 || !containsSystemExclude(cfg.General.SystemExclude, "Finder") {
+		return
+	}
+
+	cfg.General.SystemExclude = removeSystemExclude(cfg.General.SystemExclude, "Finder")
+	delete(cfg.Apps, "Finder")
+}
+
+func containsSystemExclude(excludes []string, appName string) bool {
+	for _, exclude := range excludes {
+		if exclude == appName {
+			return true
+		}
+	}
+	return false
+}
+
+func removeSystemExclude(excludes []string, appName string) []string {
+	filtered := excludes[:0]
+	for _, exclude := range excludes {
+		if exclude != appName {
+			filtered = append(filtered, exclude)
+		}
+	}
+	return filtered
 }
