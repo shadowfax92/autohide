@@ -24,8 +24,8 @@ func SetVersion(v string) {
 
 var rootCmd = &cobra.Command{
 	Use:   "autohide",
-	Short: "Auto-hide inactive macOS application windows",
-	Long:  "A CLI daemon that automatically hides macOS app windows after a period of inactivity.",
+	Short: "Auto-hide inactive macOS applications",
+	Long:  "A CLI daemon that automatically hides macOS applications after a period of inactivity.",
 }
 
 var versionCmd = &cobra.Command{
