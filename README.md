@@ -2,7 +2,7 @@
 
 A macOS CLI that automatically hides app windows you're not using.
 
-Switch to Chrome, and after 60 seconds Slack, Spotify, and everything else quietly disappear. Switch back and they're right where you left them. Your desktop stays clean without you thinking about it.
+Switch between Chrome windows, and each window gets its own inactivity timer. After 60 seconds, stale windows quietly minimize while the window you're using stays put. Your desktop stays clean without you thinking about it.
 
 Also ships with a **floating overlay timer** for focus sessions — a small always-on-top widget that counts down while you work.
 
@@ -24,7 +24,7 @@ This builds both `autohide` and `autohide-overlay` into `/usr/local/bin`.
 # Start the daemon (auto-starts on login)
 autohide install
 
-# That's it. Apps now auto-hide after 1 minute of inactivity.
+# That's it. Windows now auto-hide after 1 minute of inactivity.
 ```
 
 Every command auto-starts the daemon if it isn't running, so you can also just jump straight in:
@@ -39,7 +39,7 @@ autohide status
 
 ```bash
 autohide status                # check daemon state
-autohide list                  # see tracked apps + time-to-hide
+autohide list                  # see tracked windows + time-to-hide
 autohide pause                 # stop hiding (presenting, screen sharing)
 autohide pause --duration 1h   # auto-resume after 1 hour
 autohide resume                # resume hiding
@@ -102,19 +102,20 @@ system_exclude = ["Finder"]  # never hide these
   disabled = true
 ```
 
-Changes take effect within 5 seconds — the daemon hot-reloads the config file.
+Changes take effect within 5 seconds. Per-app settings apply to each matching window independently, and the daemon hot-reloads the config file.
 
 ## How it works
 
 ```
 autohide (CLI)  ── unix socket ──▶  autohide daemon (background)
                                          │
-                                         ├── polls frontmost app via osascript every 5s
-                                         ├── hides apps that exceed their timeout
+                                         ├── polls frontmost window via osascript every 5s
+                                         ├── minimizes windows that exceed their timeout
                                          └── manages overlay timer + spawns overlay widget
 ```
 
 - **No cgo.** Talks to macOS through `osascript` (AppleScript via System Events).
+- **Per-window behavior:** macOS hide is app-wide, so autohide minimizes individual windows through Accessibility instead of hiding the whole app.
 - **No menu bar.** Pure CLI. The daemon runs via `launchd` and restarts automatically.
 - **Permissions:** Requires Automation access in System Preferences > Privacy & Security for `osascript` to control app visibility.
 

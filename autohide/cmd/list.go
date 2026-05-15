@@ -41,12 +41,12 @@ func runList(cmd *cobra.Command, args []string) error {
 	json.Unmarshal(raw, &data)
 
 	if len(data.Apps) == 0 {
-		fmt.Println("No apps tracked yet.")
+		fmt.Println("No windows tracked yet.")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "APP\tTIMEOUT\tLAST ACTIVE\tHIDDEN\tREMAINING")
+	fmt.Fprintln(w, "APP\tWINDOW\tTIMEOUT\tLAST ACTIVE\tHIDDEN\tREMAINING")
 
 	now := time.Now()
 	for _, app := range data.Apps {
@@ -66,12 +66,17 @@ func runList(cmd *cobra.Command, args []string) error {
 			hidden = "yes"
 		}
 
+		windowTitle := app.WindowTitle
+		if windowTitle == "" {
+			windowTitle = "(untitled)"
+		}
+
 		remaining := app.TimeRemaining
 		if app.Disabled || app.Hidden {
 			remaining = "-"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", app.Name, timeout, lastActive, hidden, remaining)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", app.Name, windowTitle, timeout, lastActive, hidden, remaining)
 	}
 
 	w.Flush()

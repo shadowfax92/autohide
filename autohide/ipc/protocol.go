@@ -22,6 +22,8 @@ type StatusData struct {
 
 type AppInfo struct {
 	Name          string `json:"name"`
+	WindowID      string `json:"window_id,omitempty"`
+	WindowTitle   string `json:"window_title,omitempty"`
 	LastActive    string `json:"last_active"`
 	Timeout       string `json:"timeout"`
 	Hidden        bool   `json:"hidden"`
