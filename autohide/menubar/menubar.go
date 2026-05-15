@@ -50,7 +50,7 @@ func menuItems() []menuet.MenuItem {
 
 	var items []menuet.MenuItem
 
-	statusText := fmt.Sprintf("Active  (%d apps tracked)", tracked)
+	statusText := fmt.Sprintf("Active  (%d windows tracked)", tracked)
 	if paused {
 		statusText = "Paused"
 		if resumeAt != nil {
@@ -60,7 +60,7 @@ func menuItems() []menuet.MenuItem {
 			}
 		}
 	} else if focusMode {
-		statusText = fmt.Sprintf("Focus Mode  (%d apps tracked)", tracked)
+		statusText = fmt.Sprintf("Focus Mode  (%d windows tracked)", tracked)
 	}
 	items = append(items, menuet.MenuItem{Text: statusText})
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})

@@ -8,23 +8,30 @@ import (
 	"autohide/config"
 )
 
-func TestTrackerTracksAppsIndependently(t *testing.T) {
+func TestTrackerTracksSameAppWindowsIndependently(t *testing.T) {
 	cfg := config.Default()
 	cfg.General.DefaultTimeout = config.Duration{Duration: time.Second}
 	tracker := NewTracker()
 	now := time.Unix(100, 0)
 
-	visible := []string{"Google Chrome", "Slack"}
+	docs := WindowInfo{ID: "chrome-docs", AppName: "Google Chrome", Title: "Docs"}
+	mail := WindowInfo{ID: "chrome-mail", AppName: "Google Chrome", Title: "Mail"}
+	calendar := WindowInfo{ID: "chrome-calendar", AppName: "Google Chrome", Title: "Calendar"}
+	visible := []WindowInfo{docs, mail, calendar}
 
-	tracker.UpdateAt(cfg, "Google Chrome", visible, now)
-	toHide := tracker.UpdateAt(cfg, "Google Chrome", visible, now.Add(1100*time.Millisecond))
+	tracker.UpdateWindowsAt(cfg, docs, visible, now)
+	tracker.UpdateWindowsAt(cfg, mail, visible, now.Add(500*time.Millisecond))
+	toHide := tracker.UpdateWindowsAt(cfg, calendar, visible, now.Add(1100*time.Millisecond))
 
-	if got, want := toHide, []string{"Slack"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("apps to hide = %v, want %v", got, want)
+	if got, want := windowIDs(toHide), []string{"chrome-docs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("windows to hide = %v, want %v", got, want)
 	}
+}
 
-	toHide = tracker.UpdateAt(cfg, "Slack", visible, now.Add(2200*time.Millisecond))
-	if got, want := toHide, []string{"Google Chrome"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("apps to hide = %v, want %v", got, want)
+func windowIDs(windows []WindowInfo) []string {
+	ids := make([]string, 0, len(windows))
+	for _, window := range windows {
+		ids = append(ids, window.ID)
 	}
+	return ids
 }
