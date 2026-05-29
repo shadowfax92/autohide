@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
 	"os"
+	"os/exec"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -21,7 +21,7 @@ func init() {
 
 func runStop(cmd *cobra.Command, args []string) error {
 	uid := strconv.Itoa(os.Getuid())
-	if err := exec.Command("launchctl", "bootout", "gui/"+uid+"/com.autohide.daemon").Run(); err != nil {
+	if err := exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).Run(); err != nil {
 		plist := plistPath()
 		if err2 := exec.Command("launchctl", "unload", plist).Run(); err2 != nil {
 			return fmt.Errorf("failed to stop daemon: %w", err2)

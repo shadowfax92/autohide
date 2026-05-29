@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -102,29 +103,19 @@ func (d *Daemon) tick() {
 	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	if focusMode {
-		// Focus mode: hide everything except frontmost immediately
-		for _, name := range visible {
-			if name == frontmost {
-				continue
-			}
-			_, disabled := cfg.EffectiveTimeout(name)
-			if disabled {
-				continue
-			}
+	// Both focus mode and normal mode use timeout-based hiding.
+	// Focus mode only differs in that it tracks all visible apps (not just
+	// previously-seen ones), so newly-opened apps also get auto-hidden
+	// once the timeout expires.
+	toHide := d.tracker.Update(cfg, frontmost, visible)
+	for _, name := range toHide {
+		if focusMode {
 			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
-			if err := HideApp(name); err != nil {
-				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
-			}
-		}
-	} else {
-		// Normal mode: timeout-based hiding
-		toHide := d.tracker.Update(cfg, frontmost, visible)
-		for _, name := range toHide {
+		} else {
 			d.logger.Info().Str("app", name).Msg("hiding inactive app")
-			if err := HideApp(name); err != nil {
-				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
-			}
+		}
+		if err := HideApp(name); err != nil {
+			d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 		}
 	}
 }
@@ -204,4 +195,25 @@ func (d *Daemon) SetDefaultTimeout(dur time.Duration) error {
 	cfgPath := d.cfgPath
 	d.mu.Unlock()
 	return config.Save(cfg, cfgPath)
+}
+
+func (d *Daemon) SetWorkspaceLabel(ws int, label string) error {
+	d.mu.Lock()
+	if d.cfg.Workspaces == nil {
+		d.cfg.Workspaces = make(map[string]string)
+	}
+	key := fmt.Sprintf("%d", ws)
+	if label == "" {
+		delete(d.cfg.Workspaces, key)
+	} else {
+		d.cfg.Workspaces[key] = label
+	}
+	cfg := d.cfg
+	cfgPath := d.cfgPath
+	d.mu.Unlock()
+	return config.Save(cfg, cfgPath)
+}
+
+func (d *Daemon) CfgPath() string {
+	return d.cfgPath
 }
