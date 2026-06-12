@@ -4,10 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"autohide/config"
 	"autohide/ipc"
 
 	"github.com/rs/zerolog"
@@ -67,6 +69,51 @@ func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 	data := resp.Data.(ipc.StatusData)
 	if data.WindowTracking != "starting" {
 		t.Errorf("window_tracking = %q, want starting (pre-first-tick)", data.WindowTracking)
+	}
+}
+
+func TestHandleStatusPermissionsUnknownBeforeFirstTick(t *testing.T) {
+	s := seededServer(t)
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted != nil || data.ScreenRecording != nil {
+		t.Errorf("permissions must be unknown pre-tick, got ax=%v sr=%v", data.AXTrusted, data.ScreenRecording)
+	}
+	if data.DefaultTimeout != "1m" {
+		t.Errorf("default_timeout = %q, want 1m", data.DefaultTimeout)
+	}
+	want := []string{"30s", "1m", "2m", "5m"}
+	if len(data.TimeoutPresets) != len(want) {
+		t.Fatalf("timeout_presets = %v, want %v", data.TimeoutPresets, want)
+	}
+	for i, p := range want {
+		if data.TimeoutPresets[i] != p {
+			t.Errorf("timeout_presets[%d] = %q, want %q", i, data.TimeoutPresets[i], p)
+		}
+	}
+}
+
+const mixedPermissionsSnapshotJSON = `{
+  "ax_trusted": true,
+  "screen_recording": false,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [{"pid": 100, "name": "Google Chrome", "hidden": false}],
+  "windows": [{"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"}]
+}`
+
+func TestHandleStatusPermissionsAfterSnapshot(t *testing.T) {
+	d := testDaemon(t, "#!/bin/sh\ncat <<'JSON'\n"+mixedPermissionsSnapshotJSON+"\nJSON\n")
+	if !d.tickNative(d.cfg, false) {
+		t.Fatal("native tick should run")
+	}
+
+	s := NewServer(d, "", zerolog.Nop())
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted == nil || !*data.AXTrusted {
+		t.Errorf("ax_trusted = %v, want true", data.AXTrusted)
+	}
+	if data.ScreenRecording == nil || *data.ScreenRecording {
+		t.Errorf("screen_recording = %v, want false", data.ScreenRecording)
 	}
 }
 
@@ -306,5 +353,125 @@ func TestStartStillStrictAgainstLiveHolder(t *testing.T) {
 	if err := second.Start(); err == nil {
 		second.Stop()
 		t.Fatal("plain Start must refuse a live socket")
+	}
+}
+
+// The stub validates its argv so a wrong helper invocation fails the test.
+const axPromptScript = "#!/bin/sh\n[ \"$1\" = \"check\" ] && [ \"$2\" = \"--prompt\" ] || { echo bad args >&2; exit 1; }\necho '{\"ax_trusted\": true}'\n"
+
+func TestAXPromptRunsHelperAndRefreshesCache(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeHelper(t, dir, axPromptScript)
+	t.Setenv("PATH", dir)
+
+	s := NewServer(testDaemon(t, ""), "", zerolog.Nop())
+	resp := s.handleAXPrompt()
+	if !resp.OK {
+		t.Fatalf("ax_prompt failed: %s", resp.Error)
+	}
+	if data := resp.Data.(ipc.AXPromptData); !data.AXTrusted {
+		t.Errorf("ax_trusted = false, want true")
+	}
+
+	status := s.handleStatus().Data.(ipc.StatusData)
+	if status.AXTrusted == nil || !*status.AXTrusted {
+		t.Errorf("status ax_trusted = %v after prompt, want true", status.AXTrusted)
+	}
+}
+
+func TestAXPromptWithoutHelperErrors(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	s := NewServer(testDaemon(t, ""), "", zerolog.Nop())
+	resp := s.handleAXPrompt()
+	if resp.OK || !strings.Contains(resp.Error, "autohide-helper") {
+		t.Fatalf("expected helper-not-found error, got %+v", resp)
+	}
+}
+
+func TestSetTimeoutPersistsConfig(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	d := New(config.Default(), cfgPath, zerolog.Nop())
+	s := NewServer(d, "", zerolog.Nop())
+
+	resp := s.handleSetTimeout(ipc.Request{Command: "set_timeout", Args: map[string]string{"duration": "2m"}})
+	if !resp.OK {
+		t.Fatalf("set_timeout failed: %s", resp.Error)
+	}
+	if got := d.Config().General.DefaultTimeout.Duration; got != 2*time.Minute {
+		t.Errorf("in-memory timeout = %v, want 2m", got)
+	}
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.General.DefaultTimeout.Duration; got != 2*time.Minute {
+		t.Errorf("persisted timeout = %v, want 2m", got)
+	}
+	if status := s.handleStatus().Data.(ipc.StatusData); status.DefaultTimeout != "2m" {
+		t.Errorf("status default_timeout = %q, want 2m", status.DefaultTimeout)
+	}
+}
+
+func TestSetTimeoutRejectsInvalid(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	d := New(config.Default(), cfgPath, zerolog.Nop())
+	s := NewServer(d, "", zerolog.Nop())
+
+	for _, args := range []map[string]string{nil, {"duration": "nope"}, {"duration": ""}} {
+		resp := s.handleSetTimeout(ipc.Request{Command: "set_timeout", Args: args})
+		if resp.OK || resp.Error == "" {
+			t.Errorf("set_timeout(%v) should error, got %+v", args, resp)
+		}
+	}
+	if got := d.Config().General.DefaultTimeout.Duration; got != time.Minute {
+		t.Errorf("timeout changed to %v on invalid input", got)
+	}
+}
+
+// set_timeout must not mutate the config struct that Config() has already
+// handed to unlocked readers (status handler, menubar). Fails under -race
+// if SetDefaultTimeout writes in place instead of copy-on-write.
+func TestSetTimeoutDoesNotRaceStatusReaders(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	d := New(config.Default(), cfgPath, zerolog.Nop())
+	s := NewServer(d, "", zerolog.Nop())
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			s.handleStatus()
+		}()
+		go func() {
+			defer wg.Done()
+			s.handleSetTimeout(ipc.Request{Command: "set_timeout", Args: map[string]string{"duration": "2m"}})
+		}()
+	}
+	wg.Wait()
+}
+
+// An old helper whose snapshot omits screen_recording must leave the cache
+// unknown rather than stamping "denied".
+func TestSnapshotWithoutSRKeepsCacheUnknown(t *testing.T) {
+	noSR := `{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [{"pid": 100, "name": "Google Chrome", "hidden": false}],
+  "windows": []
+}`
+	d := testDaemon(t, "#!/bin/sh\ncat <<'JSON'\n"+noSR+"\nJSON\n")
+	if !d.tickNative(d.cfg, false) {
+		t.Fatal("native tick should run")
+	}
+
+	data := NewServer(d, "", zerolog.Nop()).handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted == nil || !*data.AXTrusted {
+		t.Errorf("ax_trusted = %v, want true", data.AXTrusted)
+	}
+	if data.ScreenRecording != nil {
+		t.Errorf("screen_recording = %v, want unknown (absent)", *data.ScreenRecording)
 	}
 }

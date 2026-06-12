@@ -35,6 +35,9 @@ type Daemon struct {
 	focusMode    bool
 	startTime    time.Time
 	windowStatus string
+	// nil until a helper snapshot (or ax_prompt) reports them.
+	axTrusted       *bool
+	screenRecording *bool
 
 	getFrontmostApp func() (string, error)
 	getVisibleApps  func() ([]string, error)
@@ -87,6 +90,70 @@ func (d *Daemon) WindowTrackingStatus() string {
 	return d.windowStatus
 }
 
+func (d *Daemon) setAXTrusted(trusted bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.axTrusted = &trusted
+}
+
+func (d *Daemon) setScreenRecording(granted bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.screenRecording = &granted
+}
+
+// PromptAccessibility fires the system Accessibility grant dialog from the
+// daemon's own process tree so the TCC prompt registers this app's identity
+// (a UI-process prompt would register the wrong one). Locates the helper
+// per call instead of touching d.helper, which is tick-goroutine-only.
+func (d *Daemon) PromptAccessibility() (bool, error) {
+	path, err := LocateHelper()
+	if err != nil {
+		return false, err
+	}
+	result, err := NewHelper(path).Check(true)
+	if err != nil {
+		return false, err
+	}
+	d.applyCheck(result)
+	return result.AXTrusted, nil
+}
+
+// seedPermissions probes the helper once so permission state is known even
+// when the native tick never runs (window_tracking off); no prompt fires.
+func (d *Daemon) seedPermissions(h *Helper) {
+	result, err := h.Check(false)
+	if err != nil {
+		d.logger.Debug().Err(err).Msg("permission seed probe failed")
+		return
+	}
+	d.applyCheck(result)
+}
+
+func (d *Daemon) applyCheck(result *CheckResult) {
+	d.setAXTrusted(result.AXTrusted)
+	if result.ScreenRecording != nil {
+		d.setScreenRecording(*result.ScreenRecording)
+	}
+}
+
+// Permissions returns the last-observed accessibility / screen-recording
+// state; nil means no helper snapshot has reported yet. Returns copies so
+// callers can't race the cache.
+func (d *Daemon) Permissions() (axTrusted, screenRecording *bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.axTrusted != nil {
+		v := *d.axTrusted
+		axTrusted = &v
+	}
+	if d.screenRecording != nil {
+		v := *d.screenRecording
+		screenRecording = &v
+	}
+	return axTrusted, screenRecording
+}
+
 func (d *Daemon) Run(ctx context.Context) error {
 	interval := d.cfg.General.CheckInterval.Duration
 	ticker := time.NewTicker(interval)
@@ -96,6 +163,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Dur("check_interval", interval).
 		Dur("default_timeout", d.cfg.General.DefaultTimeout.Duration).
 		Msg("daemon started")
+
+	if path, err := LocateHelper(); err == nil {
+		d.seedPermissions(NewHelper(path))
+	}
 
 	for {
 		select {
@@ -187,6 +258,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	d.applyCheck(&CheckResult{AXTrusted: snap.AXTrusted, ScreenRecording: snap.ScreenRecording})
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
@@ -463,11 +535,16 @@ func (d *Daemon) IsFocusMode() bool {
 	return d.focusMode
 }
 
+// SetDefaultTimeout is copy-on-write: Config() hands the current pointer to
+// unlocked readers (status handler, menubar), so the struct must never be
+// mutated in place — clone, modify, swap, like the hot-reload path. The
+// shallow copy shares the Apps map, which nothing mutates in place.
 func (d *Daemon) SetDefaultTimeout(dur time.Duration) error {
 	d.mu.Lock()
-	d.cfg.General.DefaultTimeout = config.Duration{Duration: dur}
-	cfg := d.cfg
+	cfg := *d.cfg
+	cfg.General.DefaultTimeout = config.Duration{Duration: dur}
+	d.cfg = &cfg
 	cfgPath := d.cfgPath
 	d.mu.Unlock()
-	return config.Save(cfg, cfgPath)
+	return config.Save(&cfg, cfgPath)
 }

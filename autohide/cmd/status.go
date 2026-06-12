@@ -58,5 +58,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if data.WindowTracking != "" {
 		fmt.Printf("Windows:   %s\n", data.WindowTracking)
 	}
+	if data.AXTrusted != nil {
+		fmt.Printf("Access.:   %s\n", grantLabel(*data.AXTrusted))
+	}
+	if data.ScreenRecording != nil {
+		fmt.Printf("Titles:    %s (screen recording)\n", grantLabel(*data.ScreenRecording))
+	}
 	return nil
+}
+
+func grantLabel(granted bool) string {
+	if granted {
+		return "granted"
+	}
+	return "not granted"
 }

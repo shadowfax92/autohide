@@ -10,6 +10,7 @@ import (
 
 const fullSnapshotJSON = `{
   "ax_trusted": true,
+  "screen_recording": true,
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
@@ -29,6 +30,9 @@ func TestParseSnapshotFull(t *testing.T) {
 	}
 	if !snap.AXTrusted {
 		t.Error("ax_trusted should be true")
+	}
+	if snap.ScreenRecording == nil || !*snap.ScreenRecording {
+		t.Errorf("screen_recording = %v, want true", snap.ScreenRecording)
 	}
 	if snap.Frontmost.Pid != 100 || snap.Frontmost.Name != "Google Chrome" {
 		t.Errorf("frontmost = %+v", snap.Frontmost)
@@ -51,6 +55,9 @@ func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
 	}
 	if snap.AXTrusted || snap.FocusedWindowID != 0 || snap.Frontmost.Name != "" {
 		t.Errorf("missing fields should zero out, got %+v", snap)
+	}
+	if snap.ScreenRecording != nil {
+		t.Errorf("absent screen_recording must stay unknown (old helper), got %v", *snap.ScreenRecording)
 	}
 }
 
@@ -143,10 +150,49 @@ func TestHelperFailurePropagatesStderr(t *testing.T) {
 }
 
 func writeFakeHelper(t *testing.T, dir, script string) string {
+	return writeFakeBinary(t, dir, helperName, script)
+}
+
+func writeFakeBinary(t *testing.T, dir, name, script string) string {
 	t.Helper()
-	path := filepath.Join(dir, helperName)
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestLocateUIPrefersSiblingDir(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakeBinary(t, dir, uiName, "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", "")
+
+	got, err := locateBinary(uiName, []string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
+func TestLocateUIFallsBackToPath(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakeBinary(t, dir, uiName, "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+
+	got, err := locateBinary(uiName, []string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
+func TestLocateUINotFound(t *testing.T) {
+	t.Setenv("PATH", "")
+	if _, err := locateBinary(uiName, []string{t.TempDir()}); err == nil {
+		t.Error("expected not-found error")
+	}
 }

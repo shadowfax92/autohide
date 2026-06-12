@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"autohide/config"
 	"autohide/ipc"
 
 	"github.com/rs/zerolog"
@@ -161,6 +162,10 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleResume()
 	case "list":
 		resp = s.handleList(req)
+	case "ax_prompt":
+		resp = s.handleAXPrompt()
+	case "set_timeout":
+		resp = s.handleSetTimeout(req)
 	case "hide_all":
 		resp = s.handleHideAll()
 	case "focus_on":
@@ -180,13 +185,27 @@ func (s *Server) handle(conn net.Conn) {
 
 func (s *Server) handleStatus() ipc.Response {
 	paused, resumeAt := s.daemon.IsPaused()
+	axTrusted, screenRecording := s.daemon.Permissions()
+	cfg := s.daemon.Config()
+	presets := cfg.Menubar.TimeoutPresets
+	if len(presets) == 0 {
+		presets = config.Default().Menubar.TimeoutPresets
+	}
+	presetLabels := make([]string, 0, len(presets))
+	for _, p := range presets {
+		presetLabels = append(presetLabels, config.FormatDuration(p.Duration))
+	}
 	data := ipc.StatusData{
-		Running:        true,
-		Paused:         paused,
-		FocusMode:      s.daemon.IsFocusMode(),
-		Uptime:         s.daemon.Uptime().Round(time.Second).String(),
-		TrackedCount:   s.daemon.TrackerCount(),
-		WindowTracking: s.daemon.WindowTrackingStatus(),
+		Running:         true,
+		Paused:          paused,
+		FocusMode:       s.daemon.IsFocusMode(),
+		Uptime:          s.daemon.Uptime().Round(time.Second).String(),
+		TrackedCount:    s.daemon.TrackerCount(),
+		WindowTracking:  s.daemon.WindowTrackingStatus(),
+		AXTrusted:       axTrusted,
+		ScreenRecording: screenRecording,
+		DefaultTimeout:  config.FormatDuration(cfg.General.DefaultTimeout.Duration),
+		TimeoutPresets:  presetLabels,
 	}
 	if resumeAt != nil {
 		data.ResumeAt = resumeAt.Format(time.RFC3339)
@@ -216,6 +235,31 @@ func (s *Server) handleResume() ipc.Response {
 	s.daemon.Resume()
 	s.logger.Info().Msg("daemon resumed")
 	return ipc.Response{OK: true, Data: ipc.PauseData{Paused: false}}
+}
+
+func (s *Server) handleAXPrompt() ipc.Response {
+	trusted, err := s.daemon.PromptAccessibility()
+	if err != nil {
+		return ipc.Response{Error: err.Error()}
+	}
+	s.logger.Info().Bool("ax_trusted", trusted).Msg("accessibility prompt requested")
+	return ipc.Response{OK: true, Data: ipc.AXPromptData{AXTrusted: trusted}}
+}
+
+func (s *Server) handleSetTimeout(req ipc.Request) ipc.Response {
+	raw := req.Args["duration"]
+	if raw == "" {
+		return ipc.Response{Error: "missing duration"}
+	}
+	dur, err := time.ParseDuration(raw)
+	if err != nil || dur <= 0 {
+		return ipc.Response{Error: fmt.Sprintf("invalid duration: %s", raw)}
+	}
+	if err := s.daemon.SetDefaultTimeout(dur); err != nil {
+		return ipc.Response{Error: fmt.Sprintf("saving config: %s", err)}
+	}
+	s.logger.Info().Dur("timeout", dur).Msg("default timeout updated")
+	return ipc.Response{OK: true}
 }
 
 func (s *Server) handleHideAll() ipc.Response {

@@ -196,6 +196,35 @@ func TestExitNativeResetsWindowState(t *testing.T) {
 	}
 }
 
+// Startup seeding makes permission chips real even when the native tick
+// can't run (window_tracking off); SR stays unknown for old helpers that
+// don't report it.
+func TestSeedPermissionsFromHelperCheck(t *testing.T) {
+	d := testDaemon(t, "#!/bin/sh\necho '{\"ax_trusted\": false, \"screen_recording\": true}'\n")
+	d.seedPermissions(d.helper)
+
+	ax, sr := d.Permissions()
+	if ax == nil || *ax {
+		t.Errorf("ax = %v, want false", ax)
+	}
+	if sr == nil || !*sr {
+		t.Errorf("sr = %v, want true", sr)
+	}
+}
+
+func TestSeedPermissionsOldHelperLeavesSRUnknown(t *testing.T) {
+	d := testDaemon(t, "#!/bin/sh\necho '{\"ax_trusted\": true}'\n")
+	d.seedPermissions(d.helper)
+
+	ax, sr := d.Permissions()
+	if ax == nil || !*ax {
+		t.Errorf("ax = %v, want true", ax)
+	}
+	if sr != nil {
+		t.Errorf("sr = %v, want unknown (nil)", sr)
+	}
+}
+
 func TestServerHideAllIPC(t *testing.T) {
 	sock := tempSock(t)
 	d := New(testCfg(), "", zerolog.Nop())

@@ -27,6 +27,7 @@ struct Frontmost: Encodable {
 
 struct SnapshotPayload: Encodable {
     let axTrusted: Bool
+    let screenRecording: Bool
     let frontmost: Frontmost
     let focusedWindowId: UInt32
     let apps: [SnapApp]
@@ -34,6 +35,7 @@ struct SnapshotPayload: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case axTrusted = "ax_trusted"
+        case screenRecording = "screen_recording"
         case frontmost
         case focusedWindowId = "focused_window_id"
         case apps
@@ -94,6 +96,7 @@ func makeSnapshotJSON() -> String {
 
     let payload = SnapshotPayload(
         axTrusted: trusted,
+        screenRecording: CGPreflightScreenCaptureAccess(),
         frontmost: frontmost,
         focusedWindowId: focusedID,
         apps: apps,
@@ -116,7 +119,7 @@ private func focusedWindowID(pid: pid_t) -> CGWindowID {
 func checkJSON(prompt: Bool) -> String {
     let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
     let trusted = AXIsProcessTrustedWithOptions(options)
-    return "{\"ax_trusted\": \(trusted)}"
+    return "{\"ax_trusted\": \(trusted), \"screen_recording\": \(CGPreflightScreenCaptureAccess())}"
 }
 
 func encodeJSON<T: Encodable>(_ value: T) -> String {
