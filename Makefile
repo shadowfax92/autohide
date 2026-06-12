@@ -66,6 +66,7 @@ uninstall:
 	@echo "Removing $(APP_NAME)..."
 	$(APP_BIN) uninstall 2>/dev/null || true
 	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
+	pkill -f 'autohide.app/Contents/MacOS/autohide' 2>/dev/null || true
 	rm -f $(GOBIN)/$(APP_NAME)
 	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."
