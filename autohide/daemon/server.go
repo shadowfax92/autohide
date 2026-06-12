@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"autohide/ipc"
@@ -18,11 +19,12 @@ import (
 var ErrAlreadyRunning = errors.New("daemon already running")
 
 type Server struct {
-	daemon     *Daemon
-	sockPath   string
-	logger     zerolog.Logger
-	listener   net.Listener
-	onShutdown func()
+	daemon       *Daemon
+	sockPath     string
+	logger       zerolog.Logger
+	listener     net.Listener
+	onShutdown   func()
+	shutdownOnce sync.Once
 }
 
 func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
@@ -84,19 +86,26 @@ func (s *Server) StartTakeover(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
-		if err := s.Start(); err == nil {
+		err := s.Start()
+		if err == nil {
 			s.logger.Info().Msg("took over socket from previous daemon")
 			return nil
+		}
+		if !errors.Is(err, ErrAlreadyRunning) {
+			return err
 		}
 	}
 	return fmt.Errorf("takeover of %s timed out after %s", s.sockPath, timeout)
 }
 
 func (s *Server) Stop() {
+	// Unlink before closing the listener: a takeover poller binds a fresh
+	// socket file the moment the listener dies, and removing afterwards
+	// would unlink the new daemon's socket.
+	os.Remove(s.sockPath)
 	if s.listener != nil {
 		s.listener.Close()
 	}
-	os.Remove(s.sockPath)
 }
 
 func (s *Server) accept() {
@@ -130,7 +139,7 @@ func (s *Server) handle(conn net.Conn) {
 		s.logger.Info().Msg("shutdown requested via IPC")
 		s.writeResponse(conn, ipc.Response{OK: true})
 		if s.onShutdown != nil {
-			go s.onShutdown()
+			go s.shutdownOnce.Do(s.onShutdown)
 		}
 		return
 	case "status":

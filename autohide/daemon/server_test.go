@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,6 +108,27 @@ func TestShutdownRepliesOKThenFiresHook(t *testing.T) {
 	case <-fired:
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown hook never fired")
+	}
+}
+
+func TestShutdownHookFiresOnce(t *testing.T) {
+	sock := tempSock(t)
+	srv := liveServer(t, sock)
+	var fires atomic.Int32
+	srv.SetOnShutdown(func() { fires.Add(1) })
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	for range 3 {
+		if _, err := ipc.NewClient(sock).Send(ipc.Request{Command: "shutdown"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := fires.Load(); n != 1 {
+		t.Fatalf("shutdown hook fired %d times, want 1", n)
 	}
 }
 

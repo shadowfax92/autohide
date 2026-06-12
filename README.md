@@ -15,7 +15,7 @@ Also ships with a **floating overlay timer** for focus sessions — a small alwa
 
 ## Install
 
-Requires Go 1.21+ and Swift 5.9+ (for the overlay). No sudo needed.
+Requires Go 1.21+ and Swift 5.9+ (for the overlay). No sudo needed (admin account — `/Applications` is admin-writable).
 
 ```bash
 git clone https://github.com/your-user/mac-auto-hide.git
@@ -35,7 +35,7 @@ autohide install
 # That's it. Apps now auto-hide after 1 minute of inactivity.
 ```
 
-Opening the app (Finder double-click or `open /Applications/autohide.app`) starts the 🫥 menu-bar daemon if it isn't already running — if a daemon is running, it's brought forward/replaced cleanly.
+Opening the app (Finder double-click or `open /Applications/autohide.app`) starts the 🫥 menu-bar daemon if one isn't running. If the menu-bar daemon is already up, opening the app is a no-op; a headless daemon gets replaced by the menu-bar one.
 
 Every command auto-starts the daemon if it isn't running, so you can also just jump straight in:
 

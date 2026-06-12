@@ -55,12 +55,20 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	sockPath := config.SocketPath()
 	srv := daemon.NewServer(d, sockPath, logger)
 	srv.SetOnShutdown(func() {
-		time.Sleep(150 * time.Millisecond) // let the shutdown reply flush before we exit
 		logger.Info().Msg("shutdown requested, exiting")
 		cancel()
 	})
-	if err := srv.StartTakeover(5 * time.Second); err != nil {
-		return err
+	// Only the menu-bar instance (launchd agent / app launch) may displace a
+	// live daemon. Headless ensureDaemon spawns just yield, else two
+	// concurrent CLI calls duel and kill each other's fresh daemon.
+	var startErr error
+	if noMenubar {
+		startErr = srv.Start()
+	} else {
+		startErr = srv.StartTakeover(5 * time.Second)
+	}
+	if startErr != nil {
+		return startErr
 	}
 	defer srv.Stop()
 

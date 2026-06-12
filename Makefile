@@ -40,8 +40,11 @@ icon:
 
 # Stop the old daemon (via the fresh build, so this works on first install),
 # assemble the bundle, sign nested binaries then the bundle, and restart.
+# The pkill catches daemons too old to honor IPC-shutdown takeover (they exit
+# gracefully on SIGTERM); without it the new agent thrashes against them.
 install: build
-	-$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
+	$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
+	pkill -f '/autohide daemon' 2>/dev/null || true
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
@@ -52,6 +55,7 @@ install: build
 	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	codesign --force --sign - $(APP_DIR)
 	rm -rf $(LEGACY_DIR)
+	@mkdir -p $(GOBIN)
 	ln -sf $(APP_BIN) $(GOBIN)/$(APP_NAME)
 	$(APP_BIN) install
 	@touch $(APP_DIR)
@@ -59,7 +63,7 @@ install: build
 
 uninstall:
 	@echo "Removing $(APP_NAME)..."
-	-$(APP_BIN) uninstall 2>/dev/null || true
+	$(APP_BIN) uninstall 2>/dev/null || true
 	rm -f $(GOBIN)/$(APP_NAME)
 	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."
