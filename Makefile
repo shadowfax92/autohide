@@ -1,5 +1,6 @@
 APP_NAME     := autohide
 OVERLAY_NAME := autohide-overlay
+HELPER_NAME  := autohide-helper
 VERSION      := 0.1.0
 BUILD_DIR    := $(CURDIR)/build
 APP_DIR      := $(HOME)/Applications/autohide.app
@@ -9,11 +10,11 @@ GOBIN        := $(shell go env GOPATH)/bin
 GOARCH  := $(shell go env GOARCH)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build build-cli build-overlay install uninstall clean tidy
+.PHONY: all build build-cli build-overlay build-helper install uninstall clean tidy
 
 all: build
 
-build: build-cli build-overlay
+build: build-cli build-overlay build-helper
 
 build-cli:
 	@mkdir -p $(BUILD_DIR)
@@ -24,11 +25,18 @@ build-overlay:
 	cd $(OVERLAY_NAME) && swift build -c release
 	cp $(OVERLAY_NAME)/.build/release/$(OVERLAY_NAME) $(BUILD_DIR)/$(OVERLAY_NAME)
 
+build-helper:
+	@mkdir -p $(BUILD_DIR)
+	cd $(HELPER_NAME) && swift build -c release
+	cp $(HELPER_NAME)/.build/release/$(HELPER_NAME) $(BUILD_DIR)/$(HELPER_NAME)
+
 install: build
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
+	cp $(BUILD_DIR)/$(HELPER_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	codesign --force --sign - $(APP_BIN)
+	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n\
 	  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
@@ -59,6 +67,7 @@ uninstall:
 clean:
 	rm -rf $(BUILD_DIR)
 	-cd $(OVERLAY_NAME) && swift package clean 2>/dev/null || true
+	-cd $(HELPER_NAME) && swift package clean 2>/dev/null || true
 
 tidy:
 	cd $(APP_NAME) && go mod tidy
