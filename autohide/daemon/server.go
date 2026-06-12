@@ -166,6 +166,8 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleAXPrompt()
 	case "set_timeout":
 		resp = s.handleSetTimeout(req)
+	case "hide_all":
+		resp = s.handleHideAll()
 	case "focus_on":
 		s.daemon.SetFocusMode(true)
 		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: true}}
@@ -258,6 +260,14 @@ func (s *Server) handleSetTimeout(req ipc.Request) ipc.Response {
 	}
 	s.logger.Info().Dur("timeout", dur).Msg("default timeout updated")
 	return ipc.Response{OK: true}
+}
+
+func (s *Server) handleHideAll() ipc.Response {
+	data, err := s.daemon.HideAll()
+	if err != nil {
+		return ipc.Response{Error: err.Error()}
+	}
+	return ipc.Response{OK: true, Data: data}
 }
 
 func (s *Server) handleList(req ipc.Request) ipc.Response {

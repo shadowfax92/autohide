@@ -1,10 +1,15 @@
 package daemon
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"autohide/config"
+	"autohide/ipc"
 
 	"github.com/rs/zerolog"
 )
@@ -44,6 +49,93 @@ func testDaemon(t *testing.T, helperScript string) *Daemon {
 }
 
 const snapshotScript = "#!/bin/sh\ncat <<'JSON'\n" + fullSnapshotJSON + "\nJSON\n"
+
+const hideAllSnapshotJSON = `{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false},
+    {"pid": 200, "name": "NoHide", "hidden": false},
+    {"pid": 300, "name": "Slack", "hidden": false},
+    {"pid": 400, "name": "Mail", "hidden": false},
+    {"pid": 500, "name": "Zoom", "hidden": true}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 300, "app": "Slack", "title": "General"},
+    {"id": 44, "pid": 400, "app": "Mail", "title": "Inbox"}
+  ]
+}`
+
+func TestHideAllNativeSkipsIneligibleAppsAndCountsFailures(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/hide.log"
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+%s
+JSON
+;;
+hide)
+if [ "$2" = "400" ]; then
+  exit 1
+fi
+printf '%%s\n' "$2" >> %q
+;;
+esac
+`, hideAllSnapshotJSON, logPath)
+	d := testDaemon(t, script)
+	d.cfg.Apps["NoHide"] = config.AppConfig{Disabled: true}
+	d.SetFocusMode(true)
+
+	data, err := d.HideAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Hidden != 1 || data.Failed != 1 {
+		t.Fatalf("HideAll() = %+v, want 1 hidden and 1 failed", data)
+	}
+	if !d.IsFocusMode() {
+		t.Fatal("hide all must not disable focus mode")
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(raw))
+	if len(got) != 1 || got[0] != "300" {
+		t.Fatalf("helper hide pids = %v, want only Slack pid 300", got)
+	}
+}
+
+func TestHideAllFallsBackToLegacyWhenWindowTrackingOff(t *testing.T) {
+	d := testDaemon(t, "")
+	d.cfg.General.WindowTracking = false
+	d.cfg.Apps["NoHide"] = config.AppConfig{Disabled: true}
+	d.getFrontmostApp = func() (string, error) { return "Terminal", nil }
+	d.getVisibleApps = func() ([]string, error) {
+		return []string{"Terminal", "Slack", "NoHide"}, nil
+	}
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	data, err := d.HideAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Hidden != 1 || data.Failed != 0 {
+		t.Fatalf("HideAll() = %+v, want 1 hidden and 0 failed", data)
+	}
+	if len(hidden) != 1 || hidden[0] != "Slack" {
+		t.Fatalf("legacy hidden apps = %v, want Slack only", hidden)
+	}
+}
 
 // Three consecutive snapshot failures latch legacy mode, but a cooldown
 // probe recovers without a daemon restart.
@@ -130,5 +222,35 @@ func TestSeedPermissionsOldHelperLeavesSRUnknown(t *testing.T) {
 	}
 	if sr != nil {
 		t.Errorf("sr = %v, want unknown (nil)", sr)
+	}
+}
+
+func TestServerHideAllIPC(t *testing.T) {
+	sock := tempSock(t)
+	d := New(testCfg(), "", zerolog.Nop())
+	d.cfg.General.WindowTracking = false
+	d.getFrontmostApp = func() (string, error) { return "Terminal", nil }
+	d.getVisibleApps = func() ([]string, error) { return []string{"Terminal", "Slack"}, nil }
+	d.hideApp = func(name string) error { return nil }
+	srv := NewServer(d, sock, zerolog.Nop())
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "hide_all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Fatalf("hide_all failed: %s", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	var data ipc.HideAllData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Hidden != 1 || data.Failed != 0 {
+		t.Fatalf("hide_all data = %+v, want 1 hidden and 0 failed", data)
 	}
 }

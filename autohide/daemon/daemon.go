@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"autohide/config"
+	"autohide/ipc"
 
 	"github.com/rs/zerolog"
 )
@@ -22,7 +23,7 @@ type Daemon struct {
 	tracker *Tracker
 	logger  zerolog.Logger
 
-	// helper state is touched only from the tick goroutine.
+	actionMu      sync.Mutex
 	helper        *Helper
 	helperFails   int
 	helperRetryAt time.Time
@@ -37,16 +38,23 @@ type Daemon struct {
 	// nil until a helper snapshot (or ax_prompt) reports them.
 	axTrusted       *bool
 	screenRecording *bool
+
+	getFrontmostApp func() (string, error)
+	getVisibleApps  func() ([]string, error)
+	hideApp         func(string) error
 }
 
 func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
 	return &Daemon{
-		cfgPath:      cfgPath,
-		cfg:          cfg,
-		tracker:      NewTracker(),
-		logger:       logger,
-		startTime:    time.Now(),
-		windowStatus: "starting",
+		cfgPath:         cfgPath,
+		cfg:             cfg,
+		tracker:         NewTracker(),
+		logger:          logger,
+		startTime:       time.Now(),
+		windowStatus:    "starting",
+		getFrontmostApp: GetFrontmostApp,
+		getVisibleApps:  GetVisibleApps,
+		hideApp:         HideApp,
 	}
 }
 
@@ -172,6 +180,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) tick() {
+	d.actionMu.Lock()
+	defer d.actionMu.Unlock()
+
 	d.mu.RLock()
 	paused := d.paused
 	resumeAt := d.resumeAt
@@ -190,12 +201,7 @@ func (d *Daemon) tick() {
 		return
 	}
 
-	// Hot-reload config
-	if newCfg, err := config.Load(d.cfgPath); err == nil {
-		d.mu.Lock()
-		d.cfg = newCfg
-		d.mu.Unlock()
-	}
+	d.reloadConfig()
 
 	d.mu.RLock()
 	cfg := d.cfg
@@ -299,6 +305,122 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	return true
 }
 
+func (d *Daemon) reloadConfig() {
+	if newCfg, err := config.Load(d.cfgPath); err == nil {
+		d.mu.Lock()
+		d.cfg = newCfg
+		d.mu.Unlock()
+	}
+}
+
+// HideAll immediately hides eligible background apps without changing focus mode.
+func (d *Daemon) HideAll() (ipc.HideAllData, error) {
+	d.actionMu.Lock()
+	defer d.actionMu.Unlock()
+
+	d.reloadConfig()
+	d.mu.RLock()
+	cfg := d.cfg
+	d.mu.RUnlock()
+
+	if data, ok := d.hideAllNative(cfg); ok {
+		return data, nil
+	}
+	return d.hideAllLegacy(cfg)
+}
+
+func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
+	if !cfg.General.WindowTracking {
+		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
+		d.exitNative()
+		return ipc.HideAllData{}, false
+	}
+	if d.helper == nil {
+		path, err := LocateHelper()
+		if err != nil {
+			d.setWindowStatus(resolveWindowStatus(true, false, 0, true))
+			d.exitNative()
+			return ipc.HideAllData{}, false
+		}
+		d.helper = NewHelper(path)
+		d.logger.Info().Str("path", path).Msg("autohide-helper found")
+	}
+	if d.helperFails >= maxHelperFails && time.Now().Before(d.helperRetryAt) {
+		d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+		d.exitNative()
+		return ipc.HideAllData{}, false
+	}
+
+	snap, err := d.helper.Snapshot()
+	if err != nil {
+		d.helperFails++
+		d.logger.Warn().Err(err).Int("consecutive", d.helperFails).Msg("window snapshot failed")
+		if d.helperFails >= maxHelperFails {
+			d.logger.Error().Msg("helper failing persistently; falling back to app-level autohide")
+			d.helperRetryAt = time.Now().Add(helperRetryCooldown)
+			d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+			d.exitNative()
+		}
+		return ipc.HideAllData{}, false
+	}
+	d.helperFails = 0
+	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	if !d.nativeActive {
+		d.nativeActive = true
+		d.tracker.ResetWindows()
+	}
+
+	var data ipc.HideAllData
+	for _, app := range snap.Apps {
+		if app.Hidden || app.Name == snap.Frontmost.Name {
+			continue
+		}
+		if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
+			continue
+		}
+		d.logger.Debug().Str("app", app.Name).Msg("hide all: hiding app")
+		if err := d.helper.Hide(app.Pid); err != nil {
+			data.Failed++
+			d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
+			continue
+		}
+		data.Hidden++
+	}
+	return data, true
+}
+
+func (d *Daemon) hideAllLegacy(cfg *config.Config) (ipc.HideAllData, error) {
+	var data ipc.HideAllData
+	frontmost, err := d.getFrontmostApp()
+	if err != nil {
+		return data, err
+	}
+
+	visible, err := d.getVisibleApps()
+	if err != nil {
+		return data, err
+	}
+
+	for _, name := range visible {
+		if name == frontmost {
+			continue
+		}
+		_, disabled := cfg.EffectiveTimeout(name)
+		if disabled {
+			continue
+		}
+		d.logger.Debug().Str("app", name).Msg("hide all: hiding app")
+		if err := d.hideApp(name); err != nil {
+			data.Failed++
+			d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+			continue
+		}
+		data.Hidden++
+	}
+
+	return data, nil
+}
+
 // exitNative drops per-window state when leaving the helper path so list
 // data and timers can't rot unobserved; re-entry re-leases via ResetWindows
 // + the appearance rule.
@@ -312,20 +434,19 @@ func (d *Daemon) exitNative() {
 // tickLegacy is the pre-helper osascript path with the old app-level
 // semantics: System Events polling and whole-app hides only.
 func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
-	frontmost, err := GetFrontmostApp()
+	frontmost, err := d.getFrontmostApp()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get frontmost app")
 		return
 	}
 
-	visible, err := GetVisibleApps()
+	visible, err := d.getVisibleApps()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get visible apps")
 		return
 	}
 
 	if focusMode {
-		// Focus mode: hide everything except frontmost immediately
 		for _, name := range visible {
 			if name == frontmost {
 				continue
@@ -335,16 +456,15 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 				continue
 			}
 			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
-			if err := HideApp(name); err != nil {
+			if err := d.hideApp(name); err != nil {
 				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
 	} else {
-		// Normal mode: timeout-based hiding
 		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, time.Now())
 		for _, name := range toHide {
 			d.logger.Info().Str("app", name).Msg("hiding inactive app")
-			if err := HideApp(name); err != nil {
+			if err := d.hideApp(name); err != nil {
 				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
