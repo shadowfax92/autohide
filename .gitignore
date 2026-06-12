@@ -6,3 +6,4 @@ autohide/build/
 .llm/
 autohide-helper/.build/
 .grove/
+autohide-ui/.build/
