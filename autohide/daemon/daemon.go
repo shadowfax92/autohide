@@ -20,7 +20,6 @@ type Daemon struct {
 	cfgPath string
 	cfg     *config.Config
 	tracker *Tracker
-	focus   *FocusManager
 	logger  zerolog.Logger
 
 	// helper state is touched only from the tick goroutine.
@@ -42,7 +41,6 @@ func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
 		cfgPath:      cfgPath,
 		cfg:          cfg,
 		tracker:      NewTracker(),
-		focus:        NewFocusManager(config.Dir(), logger),
 		logger:       logger,
 		startTime:    time.Now(),
 		windowStatus: "starting",
@@ -82,8 +80,6 @@ func (d *Daemon) WindowTrackingStatus() string {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	d.focus.Cleanup()
-
 	interval := d.cfg.General.CheckInterval.Duration
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -96,7 +92,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			d.focus.Stop()
 			d.logger.Info().Msg("daemon stopping")
 			return nil
 		case <-ticker.C:
@@ -329,10 +324,6 @@ func (d *Daemon) TrackerList() []AppInfo {
 	cfg := d.cfg
 	d.mu.RUnlock()
 	return d.tracker.List(cfg)
-}
-
-func (d *Daemon) Overlay() *FocusManager {
-	return d.focus
 }
 
 func (d *Daemon) SetFocusMode(on bool) {

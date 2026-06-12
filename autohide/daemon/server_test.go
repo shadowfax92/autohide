@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -171,6 +172,25 @@ func TestUnknownCommandStillErrors(t *testing.T) {
 	}
 	if resp.OK || resp.Error == "" {
 		t.Fatalf("expected unknown-command error, got %+v", resp)
+	}
+}
+
+// The overlay timer was removed; its IPC verbs must answer like any other
+// unknown command rather than keep a vestigial handler surface.
+func TestRemovedOverlayCommandsAreUnknown(t *testing.T) {
+	sock := tempSock(t)
+	srv := liveServer(t, sock)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "overlay_start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.OK || !strings.Contains(resp.Error, "unknown command: overlay_start") {
+		t.Fatalf("expected unknown-command error for overlay_start, got %+v", resp)
 	}
 }
 
