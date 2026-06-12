@@ -27,6 +27,7 @@ type GeneralConfig struct {
 	DefaultTimeout Duration `toml:"default_timeout"`
 	CheckInterval  Duration `toml:"check_interval"`
 	SystemExclude  []string `toml:"system_exclude"`
+	WindowTracking bool     `toml:"window_tracking"`
 }
 
 type AppConfig struct {
@@ -50,6 +51,7 @@ func Default() *Config {
 			DefaultTimeout: Duration{1 * time.Minute},
 			CheckInterval:  Duration{5 * time.Second},
 			SystemExclude:  []string{"Finder"},
+			WindowTracking: true,
 		},
 		Apps: map[string]AppConfig{
 			"Finder": {Disabled: true},

@@ -90,7 +90,7 @@ func (s *Server) handle(conn net.Conn) {
 	case "resume":
 		resp = s.handleResume()
 	case "list":
-		resp = s.handleList()
+		resp = s.handleList(req)
 	case "overlay_start":
 		resp = s.handleFocusStart(req)
 	case "overlay_stop":
@@ -123,11 +123,12 @@ func (s *Server) handle(conn net.Conn) {
 func (s *Server) handleStatus() ipc.Response {
 	paused, resumeAt := s.daemon.IsPaused()
 	data := ipc.StatusData{
-		Running:      true,
-		Paused:       paused,
-		FocusMode:    s.daemon.IsFocusMode(),
-		Uptime:       s.daemon.Uptime().Round(time.Second).String(),
-		TrackedCount: s.daemon.TrackerCount(),
+		Running:        true,
+		Paused:         paused,
+		FocusMode:      s.daemon.IsFocusMode(),
+		Uptime:         s.daemon.Uptime().Round(time.Second).String(),
+		TrackedCount:   s.daemon.TrackerCount(),
+		WindowTracking: s.daemon.WindowTrackingStatus(),
 	}
 	if resumeAt != nil {
 		data.ResumeAt = resumeAt.Format(time.RFC3339)
@@ -159,7 +160,8 @@ func (s *Server) handleResume() ipc.Response {
 	return ipc.Response{OK: true, Data: ipc.PauseData{Paused: false}}
 }
 
-func (s *Server) handleList() ipc.Response {
+func (s *Server) handleList(req ipc.Request) ipc.Response {
+	withWindows := req.Args["windows"] == "true"
 	tracked := s.daemon.TrackerList()
 	now := time.Now()
 
@@ -169,14 +171,30 @@ func (s *Server) handleList() ipc.Response {
 		if remaining < 0 || a.Hidden || a.Disabled {
 			remaining = 0
 		}
-		apps = append(apps, ipc.AppInfo{
+		info := ipc.AppInfo{
 			Name:          a.Name,
 			LastActive:    a.LastActive.Format(time.RFC3339),
 			Timeout:       a.Timeout.String(),
 			Hidden:        a.Hidden,
 			TimeRemaining: remaining.Round(time.Second).String(),
 			Disabled:      a.Disabled,
-		})
+			WindowCount:   len(a.Windows),
+		}
+		if withWindows {
+			for _, w := range a.Windows {
+				wRemaining := a.Timeout - now.Sub(w.LastActive)
+				if wRemaining < 0 || a.Disabled {
+					wRemaining = 0
+				}
+				info.Windows = append(info.Windows, ipc.WindowInfo{
+					ID:            w.ID,
+					Title:         w.Title,
+					LastActive:    w.LastActive.Format(time.RFC3339),
+					TimeRemaining: wRemaining.Round(time.Second).String(),
+				})
+			}
+		}
+		apps = append(apps, info)
 	}
 
 	return ipc.Response{OK: true, Data: ipc.ListData{Apps: apps}}

@@ -4,3 +4,5 @@ autohide-overlay/.build/
 *.exe
 *.dylib
 .DS_Store
+.llm/
+autohide-helper/.build/
