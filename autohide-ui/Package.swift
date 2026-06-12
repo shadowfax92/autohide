@@ -7,9 +7,11 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
+        .executable(name: "autohide-ui", targets: ["AutohideUIApp"]),
         .library(name: "AutohideUICore", targets: ["AutohideUICore"]),
     ],
     targets: [
+        .executableTarget(name: "AutohideUIApp", dependencies: ["AutohideUICore"]),
         .target(name: "AutohideUICore"),
         .testTarget(name: "AutohideUICoreTests", dependencies: ["AutohideUICore"]),
     ]

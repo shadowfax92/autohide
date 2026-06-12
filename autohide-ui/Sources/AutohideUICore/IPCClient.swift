@@ -9,7 +9,7 @@ public enum IPCError: Error, Equatable {
 /// Synchronous client for the daemon's unix-socket JSON-lines protocol —
 /// one request line, one response line per connection, mirroring the Go
 /// client (autohide/ipc/client.go). Call off the main thread.
-public final class IPCClient {
+public final class IPCClient: Sendable {
     public static var defaultSocketPath: String {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/autohide/autohide.sock").path
