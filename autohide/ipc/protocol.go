@@ -51,3 +51,8 @@ type PauseData struct {
 type FocusModeData struct {
 	Active bool `json:"active"`
 }
+
+type HideAllData struct {
+	Hidden int `json:"hidden"`
+	Failed int `json:"failed"`
+}
