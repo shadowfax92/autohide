@@ -10,7 +10,7 @@ GOBIN        := $(shell go env GOPATH)/bin
 GOARCH  := $(shell go env GOARCH)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build build-cli build-overlay build-helper install uninstall clean tidy
+.PHONY: all build build-cli build-overlay build-helper icon install uninstall clean tidy
 
 all: build
 
@@ -29,6 +29,13 @@ build-helper:
 	@mkdir -p $(BUILD_DIR)
 	cd $(HELPER_NAME) && swift build -c release
 	cp $(HELPER_NAME)/.build/release/$(HELPER_NAME) $(BUILD_DIR)/$(HELPER_NAME)
+
+# Regenerates the committed assets/autohide.icns from scripts/make-icon.swift.
+icon:
+	@mkdir -p $(BUILD_DIR)
+	rm -rf $(BUILD_DIR)/$(APP_NAME).iconset
+	swift scripts/make-icon.swift $(BUILD_DIR)/$(APP_NAME).iconset
+	iconutil -c icns $(BUILD_DIR)/$(APP_NAME).iconset -o assets/$(APP_NAME).icns
 
 install: build
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
