@@ -81,6 +81,38 @@ public func prettyGoDuration(_ raw: String) -> String {
     return seconds > 0 ? "\(seconds)s" : "now"
 }
 
+/// Pause menu options; durationArg is the IPC pause arg (nil = indefinite).
+public enum PausePreset: CaseIterable {
+    case indefinite
+    case thirtyMinutes
+    case oneHour
+    case twoHours
+
+    public var durationArg: String? {
+        switch self {
+        case .indefinite: return nil
+        case .thirtyMinutes: return "30m"
+        case .oneHour: return "1h"
+        case .twoHours: return "2h"
+        }
+    }
+
+    public var menuLabel: String {
+        switch self {
+        case .indefinite: return "Until resumed"
+        case .thirtyMinutes: return "For 30 minutes"
+        case .oneHour: return "For 1 hour"
+        case .twoHours: return "For 2 hours"
+        }
+    }
+}
+
+/// Window titles need Screen Recording; fall back to the stable window ID.
+public func windowDisplayTitle(_ title: String?, id: UInt32) -> String {
+    guard let title, !title.isEmpty else { return "Window \(id)" }
+    return title
+}
+
 /// Renders the daemon's RFC3339 resume_at as a countdown; nil when the
 /// timestamp doesn't parse (the caller falls back to a plain "Paused").
 public func resumeCountdown(from rfc3339: String, now: Date) -> String? {

@@ -59,4 +59,18 @@ final class DisplayStateTests: XCTestCase {
         XCTAssertEqual(PermissionState(false), .denied)
         XCTAssertEqual(PermissionState(nil), .unknown)
     }
+
+    func testPausePresetDurationArgs() {
+        XCTAssertNil(PausePreset.indefinite.durationArg)
+        XCTAssertEqual(PausePreset.thirtyMinutes.durationArg, "30m")
+        XCTAssertEqual(PausePreset.oneHour.durationArg, "1h")
+        XCTAssertEqual(PausePreset.twoHours.durationArg, "2h")
+        XCTAssertEqual(PausePreset.allCases.count, 4)
+    }
+
+    func testWindowDisplayTitleFallsBackToID() {
+        XCTAssertEqual(windowDisplayTitle("Docs — Chrome", id: 42), "Docs — Chrome")
+        XCTAssertEqual(windowDisplayTitle("", id: 42), "Window 42")
+        XCTAssertEqual(windowDisplayTitle(nil, id: 7), "Window 7")
+    }
 }
