@@ -31,8 +31,8 @@ func TestParseSnapshotFull(t *testing.T) {
 	if !snap.AXTrusted {
 		t.Error("ax_trusted should be true")
 	}
-	if !snap.ScreenRecording {
-		t.Error("screen_recording should be true")
+	if snap.ScreenRecording == nil || !*snap.ScreenRecording {
+		t.Errorf("screen_recording = %v, want true", snap.ScreenRecording)
 	}
 	if snap.Frontmost.Pid != 100 || snap.Frontmost.Name != "Google Chrome" {
 		t.Errorf("frontmost = %+v", snap.Frontmost)
@@ -53,8 +53,11 @@ func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.AXTrusted || snap.ScreenRecording || snap.FocusedWindowID != 0 || snap.Frontmost.Name != "" {
+	if snap.AXTrusted || snap.FocusedWindowID != 0 || snap.Frontmost.Name != "" {
 		t.Errorf("missing fields should zero out, got %+v", snap)
+	}
+	if snap.ScreenRecording != nil {
+		t.Errorf("absent screen_recording must stay unknown (old helper), got %v", *snap.ScreenRecording)
 	}
 }
 

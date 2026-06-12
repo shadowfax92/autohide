@@ -451,3 +451,27 @@ func TestSetTimeoutDoesNotRaceStatusReaders(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// An old helper whose snapshot omits screen_recording must leave the cache
+// unknown rather than stamping "denied".
+func TestSnapshotWithoutSRKeepsCacheUnknown(t *testing.T) {
+	noSR := `{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [{"pid": 100, "name": "Google Chrome", "hidden": false}],
+  "windows": []
+}`
+	d := testDaemon(t, "#!/bin/sh\ncat <<'JSON'\n"+noSR+"\nJSON\n")
+	if !d.tickNative(d.cfg, false) {
+		t.Fatal("native tick should run")
+	}
+
+	data := NewServer(d, "", zerolog.Nop()).handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted == nil || !*data.AXTrusted {
+		t.Errorf("ax_trusted = %v, want true", data.AXTrusted)
+	}
+	if data.ScreenRecording != nil {
+		t.Errorf("screen_recording = %v, want unknown (absent)", *data.ScreenRecording)
+	}
+}

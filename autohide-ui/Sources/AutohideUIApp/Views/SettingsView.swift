@@ -69,11 +69,10 @@ struct SettingsPane: View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: "info.circle")
                 .font(.system(size: 11))
-            Text(
-                "Toggle **autohide** on in System Settings → Privacy & Security → Accessibility. "
-                    + "If it's already on after a reinstall, switch it off and on again."
-            )
-            .font(.system(size: 11.5))
+            // Single literal: concatenation infers String, which skips
+            // markdown parsing and renders the ** verbatim.
+            Text("Toggle **autohide** on in System Settings → Privacy & Security → Accessibility. If it's already on after a reinstall, switch it off and on again.")
+                .font(.system(size: 11.5))
         }
         .foregroundStyle(.secondary)
         .padding(10)

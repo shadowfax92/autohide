@@ -31,7 +31,9 @@ final class DaemonController {
         model.$section
             .removeDuplicates()
             .sink { [weak self] section in
-                if section == .apps { self?.refresh(for: section) }
+                // force: a click must not be dropped just because the 2s
+                // poll is mid-flight; user-driven refreshes are bounded.
+                if section == .apps { self?.refresh(for: section, force: true) }
             }
             .store(in: &cancellables)
     }
@@ -50,8 +52,8 @@ final class DaemonController {
         refresh(for: model.section)
     }
 
-    private func refresh(for section: NavSection) {
-        guard !refreshInFlight else { return }
+    private func refresh(for section: NavSection, force: Bool = false) {
+        guard force || !refreshInFlight else { return }
         refreshInFlight = true
         let wantApps = section == .apps
         queue.async { [client] in

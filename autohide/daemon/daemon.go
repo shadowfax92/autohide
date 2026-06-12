@@ -82,13 +82,6 @@ func (d *Daemon) WindowTrackingStatus() string {
 	return d.windowStatus
 }
 
-func (d *Daemon) setPermissions(axTrusted, screenRecording bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.axTrusted = &axTrusted
-	d.screenRecording = &screenRecording
-}
-
 func (d *Daemon) setAXTrusted(trusted bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -259,7 +252,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
-	d.setPermissions(snap.AXTrusted, snap.ScreenRecording)
+	d.applyCheck(&CheckResult{AXTrusted: snap.AXTrusted, ScreenRecording: snap.ScreenRecording})
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
