@@ -10,6 +10,11 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	maxHelperFails  = 3
+	minimizeBackoff = 5 * time.Minute
+)
+
 type Daemon struct {
 	cfgPath   string
 	cfg       *config.Config
@@ -17,22 +22,60 @@ type Daemon struct {
 	focus     *FocusManager
 	logger    zerolog.Logger
 
-	mu        sync.RWMutex
-	paused    bool
-	resumeAt  *time.Time
-	focusMode bool
-	startTime time.Time
+	// helper state is touched only from the tick goroutine.
+	helper      *Helper
+	helperFails int
+
+	mu           sync.RWMutex
+	paused       bool
+	resumeAt     *time.Time
+	focusMode    bool
+	startTime    time.Time
+	windowStatus string
 }
 
 func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
 	return &Daemon{
-		cfgPath:   cfgPath,
-		cfg:       cfg,
-		tracker:   NewTracker(),
-		focus:     NewFocusManager(config.Dir(), logger),
-		logger:    logger,
-		startTime: time.Now(),
+		cfgPath:      cfgPath,
+		cfg:          cfg,
+		tracker:      NewTracker(),
+		focus:        NewFocusManager(config.Dir(), logger),
+		logger:       logger,
+		startTime:    time.Now(),
+		windowStatus: "starting",
 	}
+}
+
+// resolveWindowStatus maps a tick's inputs to the user-facing window-tracking
+// mode label shown in `autohide status`.
+func resolveWindowStatus(windowTracking, helperFound bool, helperFails int, axTrusted bool) string {
+	switch {
+	case !windowTracking:
+		return "off"
+	case !helperFound:
+		return "legacy: helper not found"
+	case helperFails >= maxHelperFails:
+		return "legacy: helper failing"
+	case !axTrusted:
+		return "app-only: accessibility not granted"
+	default:
+		return "active"
+	}
+}
+
+func (d *Daemon) setWindowStatus(status string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.windowStatus != status {
+		d.logger.Info().Str("from", d.windowStatus).Str("to", status).Msg("window tracking mode")
+		d.windowStatus = status
+	}
+}
+
+func (d *Daemon) WindowTrackingStatus() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.windowStatus
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -85,6 +128,93 @@ func (d *Daemon) tick() {
 		d.mu.Unlock()
 	}
 
+	d.mu.RLock()
+	cfg := d.cfg
+	focusMode := d.focusMode
+	d.mu.RUnlock()
+
+	if d.tickNative(cfg, focusMode) {
+		return
+	}
+	d.tickLegacy(cfg, focusMode)
+}
+
+// tickNative runs the helper-driven path (per-window tracking). A false
+// return sends the caller to the legacy osascript path: window tracking off,
+// helper missing, or helper persistently failing. Transient snapshot errors
+// consume the tick instead so the two paths never both act in one tick.
+func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
+	if !cfg.General.WindowTracking {
+		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
+		return false
+	}
+	if d.helper == nil {
+		path, err := LocateHelper()
+		if err != nil {
+			d.setWindowStatus(resolveWindowStatus(true, false, 0, true))
+			return false
+		}
+		d.helper = NewHelper(path)
+		d.logger.Info().Str("path", path).Msg("autohide-helper found")
+	}
+	if d.helperFails >= maxHelperFails {
+		d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+		return false
+	}
+
+	snap, err := d.helper.Snapshot()
+	if err != nil {
+		d.helperFails++
+		d.logger.Warn().Err(err).Int("consecutive", d.helperFails).Msg("window snapshot failed")
+		if d.helperFails >= maxHelperFails {
+			d.logger.Error().Msg("helper failing persistently; falling back to app-level autohide")
+			d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+		}
+		return true
+	}
+	d.helperFails = 0
+	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+
+	now := time.Now()
+	if focusMode {
+		// Focus mode: hide everything except frontmost immediately
+		for _, app := range snap.Apps {
+			if app.Hidden || app.Name == snap.Frontmost.Name {
+				continue
+			}
+			if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
+				continue
+			}
+			d.logger.Debug().Str("app", app.Name).Msg("focus mode: hiding app")
+			if err := d.helper.Hide(app.Pid); err != nil {
+				d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
+			}
+		}
+		return true
+	}
+
+	dec := d.tracker.Update(cfg, snap, now)
+	for _, app := range dec.HideApps {
+		d.logger.Info().Str("app", app.Name).Msg("hiding inactive app")
+		if err := d.helper.Hide(app.Pid); err != nil {
+			d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
+		}
+	}
+	for _, w := range dec.MinimizeWindows {
+		d.logger.Info().Str("app", w.App).Uint32("window", w.ID).Str("title", w.Title).
+			Msg("minimizing inactive window")
+		if err := d.helper.Minimize(w.Pid, w.ID); err != nil {
+			d.logger.Warn().Err(err).Str("app", w.App).Uint32("window", w.ID).
+				Msg("minimize failed; backing off")
+			d.tracker.DeferWindow(w.ID, now.Add(minimizeBackoff))
+		}
+	}
+	return true
+}
+
+// tickLegacy is the pre-helper osascript path, byte-for-byte the old
+// behavior: app-level tracking and System Events hides.
+func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 	frontmost, err := GetFrontmostApp()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get frontmost app")
@@ -96,11 +226,6 @@ func (d *Daemon) tick() {
 		d.logger.Warn().Err(err).Msg("failed to get visible apps")
 		return
 	}
-
-	d.mu.RLock()
-	cfg := d.cfg
-	focusMode := d.focusMode
-	d.mu.RUnlock()
 
 	if focusMode {
 		// Focus mode: hide everything except frontmost immediately
