@@ -12,21 +12,31 @@ type Response struct {
 }
 
 type StatusData struct {
-	Running      bool   `json:"running"`
-	Paused       bool   `json:"paused"`
-	FocusMode    bool   `json:"focus_mode"`
-	Uptime       string `json:"uptime"`
-	TrackedCount int    `json:"tracked_count"`
-	ResumeAt     string `json:"resume_at,omitempty"`
+	Running        bool   `json:"running"`
+	Paused         bool   `json:"paused"`
+	FocusMode      bool   `json:"focus_mode"`
+	Uptime         string `json:"uptime"`
+	TrackedCount   int    `json:"tracked_count"`
+	ResumeAt       string `json:"resume_at,omitempty"`
+	WindowTracking string `json:"window_tracking,omitempty"`
+}
+
+type WindowInfo struct {
+	ID            uint32 `json:"id"`
+	Title         string `json:"title,omitempty"`
+	LastActive    string `json:"last_active"`
+	TimeRemaining string `json:"time_remaining"`
 }
 
 type AppInfo struct {
-	Name          string `json:"name"`
-	LastActive    string `json:"last_active"`
-	Timeout       string `json:"timeout"`
-	Hidden        bool   `json:"hidden"`
-	TimeRemaining string `json:"time_remaining"`
-	Disabled      bool   `json:"disabled"`
+	Name          string       `json:"name"`
+	LastActive    string       `json:"last_active"`
+	Timeout       string       `json:"timeout"`
+	Hidden        bool         `json:"hidden"`
+	TimeRemaining string       `json:"time_remaining"`
+	Disabled      bool         `json:"disabled"`
+	WindowCount   int          `json:"window_count"`
+	Windows       []WindowInfo `json:"windows,omitempty"`
 }
 
 type ListData struct {

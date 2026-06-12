@@ -55,5 +55,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Focus:     %s\n", focus)
 	fmt.Printf("Uptime:    %s\n", data.Uptime)
 	fmt.Printf("Tracked:   %d apps\n", data.TrackedCount)
+	if data.WindowTracking != "" {
+		fmt.Printf("Windows:   %s\n", data.WindowTracking)
+	}
 	return nil
 }
