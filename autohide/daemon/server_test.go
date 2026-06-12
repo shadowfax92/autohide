@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -426,4 +427,27 @@ func TestSetTimeoutRejectsInvalid(t *testing.T) {
 	if got := d.Config().General.DefaultTimeout.Duration; got != time.Minute {
 		t.Errorf("timeout changed to %v on invalid input", got)
 	}
+}
+
+// set_timeout must not mutate the config struct that Config() has already
+// handed to unlocked readers (status handler, menubar). Fails under -race
+// if SetDefaultTimeout writes in place instead of copy-on-write.
+func TestSetTimeoutDoesNotRaceStatusReaders(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	d := New(config.Default(), cfgPath, zerolog.Nop())
+	s := NewServer(d, "", zerolog.Nop())
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			s.handleStatus()
+		}()
+		go func() {
+			defer wg.Done()
+			s.handleSetTimeout(ipc.Request{Command: "set_timeout", Args: map[string]string{"duration": "2m"}})
+		}()
+	}
+	wg.Wait()
 }

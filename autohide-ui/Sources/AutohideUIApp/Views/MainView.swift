@@ -9,9 +9,14 @@ struct MainView: View {
         HStack(spacing: 0) {
             Sidebar()
             Divider().overlay(Theme.Palette.separator)
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.Palette.windowBackground)
+            VStack(spacing: 0) {
+                if let message = model.lastError {
+                    ErrorBanner(message: message) { model.lastError = nil }
+                }
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(Theme.Palette.windowBackground)
         }
         .frame(minWidth: 800, minHeight: 540)
         .background(Theme.Palette.windowBackground)
@@ -24,6 +29,32 @@ struct MainView: View {
         case .apps: AppsPane()
         case .settings: SettingsPane()
         }
+    }
+}
+
+private struct ErrorBanner: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+            Text(message)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(Theme.Palette.error)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(Theme.Palette.error.opacity(0.10))
     }
 }
 

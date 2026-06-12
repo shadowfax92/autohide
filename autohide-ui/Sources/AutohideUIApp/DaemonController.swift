@@ -1,5 +1,6 @@
 import AppKit
 import AutohideUICore
+import Combine
 import Foundation
 
 /// Bridges the window model to the daemon: polls status every 2s (plus the
@@ -12,11 +13,21 @@ final class DaemonController {
     private let model: MainWindowModel
     private let queue = DispatchQueue(label: "autohide-ui.ipc")
     private var timer: Timer?
+    private var cancellables = Set<AnyCancellable>()
 
     init(model: MainWindowModel, client: IPCClient = IPCClient()) {
         self.model = model
         self.client = client
         wireActions()
+        // Refresh the moment the Apps pane opens so it never shows a stale
+        // empty state for a poll interval. $section emits before the model
+        // property updates, so pass the new value through.
+        model.$section
+            .removeDuplicates()
+            .sink { [weak self] section in
+                if section == .apps { self?.refresh(for: section) }
+            }
+            .store(in: &cancellables)
     }
 
     func start() {
@@ -30,7 +41,11 @@ final class DaemonController {
     }
 
     func refresh() {
-        let wantApps = model.section == .apps
+        refresh(for: model.section)
+    }
+
+    private func refresh(for section: NavSection) {
+        let wantApps = section == .apps
         queue.async { [client] in
             let status = try? client.status()
             let apps = (status != nil && wantApps) ? try? client.list(windows: true) : nil
@@ -62,22 +77,46 @@ final class DaemonController {
 
     private func perform(_ work: @escaping (IPCClient) throws -> Void) {
         queue.async { [client] in
-            try? work(client)
-            Task { @MainActor [weak self] in self?.refresh() }
+            let failure = Self.failureMessage { try work(client) }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let failure { self.model.lastError = failure }
+                self.refresh()
+            }
+        }
+    }
+
+    /// Daemon errors are actionable ("invalid duration: …") and belong in
+    /// the banner; unreachability is already rendered by DaemonDownView, so
+    /// it stays silent here.
+    private nonisolated static func failureMessage(_ work: () throws -> Void) -> String? {
+        do {
+            try work()
+            return nil
+        } catch IPCError.daemonError(let message) {
+            return message
+        } catch IPCError.daemonUnreachable {
+            return nil
+        } catch {
+            return "Unexpected daemon response."
         }
     }
 
     /// Fires the system grant dialog via the daemon (the prompt must come
-    /// from the daemon's process tree to register the right TCC identity),
-    /// then deep-links System Settings so the user lands on the toggle.
+    /// from the daemon's process tree to register the right TCC identity).
+    /// System Settings opens unless the grant already took effect — even
+    /// when the prompt fails (helper missing), toggling autohide there is
+    /// the manual remedy.
     private func grantAccessibility() {
         model.grantInFlight = true
         queue.async { [client] in
-            _ = try? client.promptAccessibility()
+            var trusted = false
+            let failure = Self.failureMessage { trusted = try client.promptAccessibility() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.model.grantInFlight = false
-                self.openSystemSettings(.accessibility)
+                if let failure { self.model.lastError = failure }
+                if !trusted { self.openSystemSettings(.accessibility) }
                 self.refresh()
             }
         }

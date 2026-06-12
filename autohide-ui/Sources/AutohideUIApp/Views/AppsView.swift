@@ -98,6 +98,7 @@ private struct AppRow: View {
     private var remainingLabel: String {
         if app.disabled { return "never hides" }
         if app.hidden { return "hidden" }
+        if app.timeRemaining == "0s" { return "hiding soon" }
         return "hides in \(prettyGoDuration(app.timeRemaining))"
     }
 

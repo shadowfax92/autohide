@@ -394,11 +394,16 @@ func (d *Daemon) IsFocusMode() bool {
 	return d.focusMode
 }
 
+// SetDefaultTimeout is copy-on-write: Config() hands the current pointer to
+// unlocked readers (status handler, menubar), so the struct must never be
+// mutated in place — clone, modify, swap, like the hot-reload path. The
+// shallow copy shares the Apps map, which nothing mutates in place.
 func (d *Daemon) SetDefaultTimeout(dur time.Duration) error {
 	d.mu.Lock()
-	d.cfg.General.DefaultTimeout = config.Duration{Duration: dur}
-	cfg := d.cfg
+	cfg := *d.cfg
+	cfg.General.DefaultTimeout = config.Duration{Duration: dur}
+	d.cfg = &cfg
 	cfgPath := d.cfgPath
 	d.mu.Unlock()
-	return config.Save(cfg, cfgPath)
+	return config.Save(&cfg, cfgPath)
 }

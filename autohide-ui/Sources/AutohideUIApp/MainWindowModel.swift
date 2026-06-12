@@ -42,6 +42,8 @@ final class MainWindowModel: ObservableObject {
     /// doesn't flash during launch.
     @Published var daemonReachable = true
     @Published var grantInFlight = false
+    /// Last failed action's message, rendered as a dismissible banner.
+    @Published var lastError: String?
 
     var onPause: ((_ duration: String?) -> Void)?
     var onResume: (() -> Void)?

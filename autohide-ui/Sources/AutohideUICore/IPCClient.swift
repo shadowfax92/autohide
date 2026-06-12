@@ -105,6 +105,11 @@ public final class IPCClient: Sendable {
         guard fd >= 0 else { throw IPCError.daemonUnreachable }
         defer { close(fd) }
 
+        // Without this, a write after the daemon exits (restart/takeover)
+        // raises SIGPIPE and kills the whole app instead of erroring.
+        var noSigpipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
+
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(socketPath.utf8)

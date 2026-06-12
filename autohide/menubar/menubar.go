@@ -57,7 +57,10 @@ func menuItems() []menuet.MenuItem {
 	items = append(items, menuet.MenuItem{
 		Text: "Open autohide…",
 		Clicked: func() {
-			daemon.SpawnUI()
+			// stderr lands in daemon.log under launchd.
+			if err := daemon.SpawnUI(); err != nil {
+				fmt.Fprintf(os.Stderr, "open autohide window: %v\n", err)
+			}
 		},
 	})
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})
