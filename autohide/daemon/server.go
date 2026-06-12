@@ -23,6 +23,7 @@ type Server struct {
 	sockPath     string
 	logger       zerolog.Logger
 	listener     net.Listener
+	boundInfo    os.FileInfo
 	onShutdown   func()
 	shutdownOnce sync.Once
 }
@@ -55,6 +56,13 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.sockPath, err)
 	}
+	// Stop unlinks explicitly (and only when it still owns the path) —
+	// auto-unlink on Close would race a takeover poller that has already
+	// bound a fresh socket at this path.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
+	s.boundInfo, _ = os.Stat(s.sockPath)
 	s.listener = ln
 
 	go s.accept()
@@ -75,13 +83,15 @@ func (s *Server) StartTakeover(timeout time.Duration) error {
 	}
 
 	resp, serr := ipc.NewClient(s.sockPath).Send(ipc.Request{Command: "shutdown"})
-	if serr != nil {
-		return fmt.Errorf("takeover: holder did not accept shutdown: %w", serr)
-	}
-	if !resp.OK {
+	if serr == nil && !resp.OK {
 		return fmt.Errorf("takeover: holder refused shutdown: %s", resp.Error)
 	}
-	s.logger.Info().Str("socket", s.sockPath).Msg("asked running daemon to shut down")
+	if serr != nil {
+		// Holder vanished between probe and send — the bind retry below settles it.
+		s.logger.Info().Err(serr).Msg("socket holder gone mid-takeover, retrying bind")
+	} else {
+		s.logger.Info().Str("socket", s.sockPath).Msg("asked running daemon to shut down")
+	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -99,13 +109,15 @@ func (s *Server) StartTakeover(timeout time.Duration) error {
 }
 
 func (s *Server) Stop() {
-	// Unlink before closing the listener: a takeover poller binds a fresh
-	// socket file the moment the listener dies, and removing afterwards
-	// would unlink the new daemon's socket.
-	os.Remove(s.sockPath)
-	if s.listener != nil {
-		s.listener.Close()
+	if s.listener == nil {
+		return
 	}
+	// Remove only the socket file this server bound — by the time a displaced
+	// daemon stops, a takeover poller may already own the path.
+	if cur, err := os.Stat(s.sockPath); err == nil && s.boundInfo != nil && os.SameFile(cur, s.boundInfo) {
+		os.Remove(s.sockPath)
+	}
+	s.listener.Close()
 }
 
 func (s *Server) accept() {

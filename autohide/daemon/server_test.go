@@ -243,6 +243,36 @@ func TestStartTakeoverTimesOutOnStubbornHolder(t *testing.T) {
 	}
 }
 
+// Simulates the takeover window: the path is freed while the dying holder's
+// listener is still open, a new server binds, then the holder stops. The
+// holder must not unlink the new server's socket (neither via its explicit
+// remove nor via UnixListener auto-unlink-on-close).
+func TestStopDoesNotUnlinkAReboundSocket(t *testing.T) {
+	sock := tempSock(t)
+
+	holder := liveServer(t, sock)
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(sock)
+
+	usurper := liveServer(t, sock)
+	if err := usurper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer usurper.Stop()
+
+	holder.Stop()
+
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("dying holder unlinked the new daemon's socket: %v", err)
+	}
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "status"})
+	if err != nil || !resp.OK {
+		t.Fatalf("new server unreachable after holder stopped: %v %+v", err, resp)
+	}
+}
+
 func TestStartStillStrictAgainstLiveHolder(t *testing.T) {
 	sock := tempSock(t)
 

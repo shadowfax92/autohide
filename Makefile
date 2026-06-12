@@ -44,8 +44,9 @@ icon:
 # gracefully on SIGTERM); without it the new agent thrashes against them.
 install: build
 	$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
-	pkill -f '/autohide daemon' 2>/dev/null || true
+	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
+	rm -f $(APP_BIN) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	cp $(BUILD_DIR)/$(HELPER_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
@@ -64,6 +65,7 @@ install: build
 uninstall:
 	@echo "Removing $(APP_NAME)..."
 	$(APP_BIN) uninstall 2>/dev/null || true
+	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
 	rm -f $(GOBIN)/$(APP_NAME)
 	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."

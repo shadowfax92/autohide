@@ -15,7 +15,7 @@ Also ships with a **floating overlay timer** for focus sessions — a small alwa
 
 ## Install
 
-Requires Go 1.21+ and Swift 5.9+ (for the overlay). No sudo needed (admin account — `/Applications` is admin-writable).
+Requires Go 1.24+ and Swift 5.9+ (for the overlay). No sudo needed (admin account — `/Applications` is admin-writable).
 
 ```bash
 git clone https://github.com/your-user/mac-auto-hide.git
