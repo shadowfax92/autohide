@@ -14,6 +14,12 @@ final class DaemonController {
     private let queue = DispatchQueue(label: "autohide-ui.ipc")
     private var timer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    /// Skips ticks while one poll is still on the wire so a wedged daemon
+    /// (5s deadlines) can't backlog the serial queue and starve actions.
+    private var refreshInFlight = false
+    /// One missed poll is launch timing (bundle launch starts the UI before
+    /// the daemon binds); two in a row is a daemon that's actually down.
+    private var consecutiveFailures = 0
 
     init(model: MainWindowModel, client: IPCClient = IPCClient()) {
         self.model = model
@@ -45,14 +51,25 @@ final class DaemonController {
     }
 
     private func refresh(for section: NavSection) {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         let wantApps = section == .apps
         queue.async { [client] in
             let status = try? client.status()
             let apps = (status != nil && wantApps) ? try? client.list(windows: true) : nil
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.model.daemonReachable = status != nil
-                if let status { self.model.status = status }
+                self.refreshInFlight = false
+                if let status {
+                    self.consecutiveFailures = 0
+                    self.model.daemonReachable = true
+                    self.model.status = status
+                } else {
+                    self.consecutiveFailures += 1
+                    if self.consecutiveFailures >= 2 {
+                        self.model.daemonReachable = false
+                    }
+                }
                 if let apps { self.model.apps = apps.apps }
             }
         }

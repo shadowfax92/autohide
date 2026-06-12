@@ -95,6 +95,12 @@ func (d *Daemon) setAXTrusted(trusted bool) {
 	d.axTrusted = &trusted
 }
 
+func (d *Daemon) setScreenRecording(granted bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.screenRecording = &granted
+}
+
 // PromptAccessibility fires the system Accessibility grant dialog from the
 // daemon's own process tree so the TCC prompt registers this app's identity
 // (a UI-process prompt would register the wrong one). Locates the helper
@@ -104,12 +110,30 @@ func (d *Daemon) PromptAccessibility() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	trusted, err := NewHelper(path).Check(true)
+	result, err := NewHelper(path).Check(true)
 	if err != nil {
 		return false, err
 	}
-	d.setAXTrusted(trusted)
-	return trusted, nil
+	d.applyCheck(result)
+	return result.AXTrusted, nil
+}
+
+// seedPermissions probes the helper once so permission state is known even
+// when the native tick never runs (window_tracking off); no prompt fires.
+func (d *Daemon) seedPermissions(h *Helper) {
+	result, err := h.Check(false)
+	if err != nil {
+		d.logger.Debug().Err(err).Msg("permission seed probe failed")
+		return
+	}
+	d.applyCheck(result)
+}
+
+func (d *Daemon) applyCheck(result *CheckResult) {
+	d.setAXTrusted(result.AXTrusted)
+	if result.ScreenRecording != nil {
+		d.setScreenRecording(*result.ScreenRecording)
+	}
 }
 
 // Permissions returns the last-observed accessibility / screen-recording
@@ -138,6 +162,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Dur("check_interval", interval).
 		Dur("default_timeout", d.cfg.General.DefaultTimeout.Duration).
 		Msg("daemon started")
+
+	if path, err := LocateHelper(); err == nil {
+		d.seedPermissions(NewHelper(path))
+	}
 
 	for {
 		select {

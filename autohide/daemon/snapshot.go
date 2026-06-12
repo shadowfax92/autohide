@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -89,6 +90,10 @@ func SpawnUI() error {
 		return err
 	}
 	cmd := exec.Command(path)
+	// Own session: without it a UI spawned from the launchd daemon shares
+	// the job's process group and gets killed on every daemon exit/restart
+	// instead of reconnecting.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -99,6 +104,11 @@ func SpawnUI() error {
 func siblingDirs() []string {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
+		// The CLI is installed as a GOBIN symlink to the bundle binary;
+		// without resolving it, sibling lookup searches GOBIN and misses.
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
 		dirs = append(dirs, filepath.Dir(exe))
 	}
 	return dirs
@@ -139,25 +149,30 @@ func (h *Helper) Hide(pid int32) error {
 	return err
 }
 
-// Check reports accessibility trust; with prompt it also triggers the system
-// grant dialog (AXIsProcessTrustedWithOptions returns immediately — the
-// dialog is async — so the normal helper timeout holds).
-func (h *Helper) Check(prompt bool) (bool, error) {
+// CheckResult is the helper's permission probe; ScreenRecording is nil for
+// old helper builds that only report ax_trusted.
+type CheckResult struct {
+	AXTrusted       bool  `json:"ax_trusted"`
+	ScreenRecording *bool `json:"screen_recording"`
+}
+
+// Check reports permission state; with prompt it also triggers the system
+// Accessibility dialog (AXIsProcessTrustedWithOptions returns immediately —
+// the dialog is async — so the normal helper timeout holds).
+func (h *Helper) Check(prompt bool) (*CheckResult, error) {
 	args := []string{"check"}
 	if prompt {
 		args = append(args, "--prompt")
 	}
 	out, err := h.run(args...)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	var result struct {
-		AXTrusted bool `json:"ax_trusted"`
-	}
+	var result CheckResult
 	if err := json.Unmarshal(out, &result); err != nil {
-		return false, fmt.Errorf("parse check output: %w", err)
+		return nil, fmt.Errorf("parse check output: %w", err)
 	}
-	return result.AXTrusted, nil
+	return &result, nil
 }
 
 func (h *Helper) run(args ...string) ([]byte, error) {

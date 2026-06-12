@@ -124,16 +124,29 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// Save writes atomically (temp file + rename): the daemon hot-reloads this
+// path every tick, so an in-place truncate would let a reload race read a
+// half-written file and revert to defaults for a tick.
 func Save(cfg *Config, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.toml")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
+	defer os.Remove(tmp.Name())
+	if err := toml.NewEncoder(tmp).Encode(cfg); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (c *Config) EffectiveTimeout(appName string) (time.Duration, bool) {

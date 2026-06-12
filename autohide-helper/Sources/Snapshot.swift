@@ -119,7 +119,7 @@ private func focusedWindowID(pid: pid_t) -> CGWindowID {
 func checkJSON(prompt: Bool) -> String {
     let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
     let trusted = AXIsProcessTrustedWithOptions(options)
-    return "{\"ax_trusted\": \(trusted)}"
+    return "{\"ax_trusted\": \(trusted), \"screen_recording\": \(CGPreflightScreenCaptureAccess())}"
 }
 
 func encodeJSON<T: Encodable>(_ value: T) -> String {
