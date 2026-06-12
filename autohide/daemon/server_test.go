@@ -151,3 +151,88 @@ func TestUnknownCommandStillErrors(t *testing.T) {
 		t.Fatalf("expected unknown-command error, got %+v", resp)
 	}
 }
+
+func TestStartTakeoverDisplacesLiveHolder(t *testing.T) {
+	sock := tempSock(t)
+
+	holder := liveServer(t, sock)
+	holderDown := make(chan struct{})
+	holder.SetOnShutdown(func() {
+		holder.Stop()
+		close(holderDown)
+	})
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	usurper := liveServer(t, sock)
+	if err := usurper.StartTakeover(3 * time.Second); err != nil {
+		t.Fatalf("takeover failed: %v", err)
+	}
+	defer usurper.Stop()
+
+	select {
+	case <-holderDown:
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder never shut down")
+	}
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Fatalf("new server not serving after takeover: %s", resp.Error)
+	}
+}
+
+func TestStartTakeoverRecoversStaleSocket(t *testing.T) {
+	sock := tempSock(t)
+	if err := os.WriteFile(sock, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := liveServer(t, sock)
+	if err := srv.StartTakeover(time.Second); err != nil {
+		t.Fatalf("stale socket not recovered: %v", err)
+	}
+	srv.Stop()
+}
+
+func TestStartTakeoverTimesOutOnStubbornHolder(t *testing.T) {
+	sock := tempSock(t)
+
+	holder := liveServer(t, sock)
+	holder.SetOnShutdown(func() {}) // acknowledges but never exits
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Stop()
+
+	usurper := liveServer(t, sock)
+	start := time.Now()
+	err := usurper.StartTakeover(700 * time.Millisecond)
+	if err == nil {
+		usurper.Stop()
+		t.Fatal("expected takeover to fail against stubborn holder")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("takeover did not respect timeout, took %s", time.Since(start))
+	}
+}
+
+func TestStartStillStrictAgainstLiveHolder(t *testing.T) {
+	sock := tempSock(t)
+
+	holder := liveServer(t, sock)
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Stop()
+
+	second := liveServer(t, sock)
+	if err := second.Start(); err == nil {
+		second.Stop()
+		t.Fatal("plain Start must refuse a live socket")
+	}
+}

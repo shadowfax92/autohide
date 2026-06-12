@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+var ErrAlreadyRunning = errors.New("daemon already running")
 
 type Server struct {
 	daemon     *Daemon
@@ -41,7 +44,7 @@ func (s *Server) Start() error {
 		conn, err := net.DialTimeout("unix", s.sockPath, 500*time.Millisecond)
 		if err == nil {
 			conn.Close()
-			return fmt.Errorf("daemon already running (socket %s is active)", s.sockPath)
+			return fmt.Errorf("%w (socket %s is active)", ErrAlreadyRunning, s.sockPath)
 		}
 		os.Remove(s.sockPath)
 	}
@@ -55,6 +58,38 @@ func (s *Server) Start() error {
 	go s.accept()
 	s.logger.Info().Str("socket", s.sockPath).Msg("IPC server listening")
 	return nil
+}
+
+// StartTakeover binds like Start, but a live socket holder is asked to shut
+// down over IPC and the bind is retried until timeout. Lets a (re)starting
+// daemon displace headless ensureDaemon spawns instead of KeepAlive-thrashing.
+func (s *Server) StartTakeover(timeout time.Duration) error {
+	err := s.Start()
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrAlreadyRunning) {
+		return err
+	}
+
+	resp, serr := ipc.NewClient(s.sockPath).Send(ipc.Request{Command: "shutdown"})
+	if serr != nil {
+		return fmt.Errorf("takeover: holder did not accept shutdown: %w", serr)
+	}
+	if !resp.OK {
+		return fmt.Errorf("takeover: holder refused shutdown: %s", resp.Error)
+	}
+	s.logger.Info().Str("socket", s.sockPath).Msg("asked running daemon to shut down")
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if err := s.Start(); err == nil {
+			s.logger.Info().Msg("took over socket from previous daemon")
+			return nil
+		}
+	}
+	return fmt.Errorf("takeover of %s timed out after %s", s.sockPath, timeout)
 }
 
 func (s *Server) Stop() {

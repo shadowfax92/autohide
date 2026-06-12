@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"autohide/config"
 	"autohide/daemon"
@@ -48,15 +49,20 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	d := daemon.New(cfg, cfgPath, logger)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sockPath := config.SocketPath()
 	srv := daemon.NewServer(d, sockPath, logger)
-	if err := srv.Start(); err != nil {
+	srv.SetOnShutdown(func() {
+		time.Sleep(150 * time.Millisecond) // let the shutdown reply flush before we exit
+		logger.Info().Msg("shutdown requested, exiting")
+		cancel()
+	})
+	if err := srv.StartTakeover(5 * time.Second); err != nil {
 		return err
 	}
 	defer srv.Stop()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -75,6 +81,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if err := d.Run(ctx); err != nil {
 			logger.Error().Err(err).Msg("daemon error")
 		}
+		// menuet's RunApplication never returns, so exit here — but release
+		// the socket first since os.Exit skips the deferred Stop.
+		srv.Stop()
 		os.Exit(0)
 	}()
 
