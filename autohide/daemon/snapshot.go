@@ -120,7 +120,7 @@ func (h *Helper) run(args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("%s %s timed out after %s", helperName, args[0], h.timeout)
 	}
 	if err != nil {

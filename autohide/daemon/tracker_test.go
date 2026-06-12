@@ -495,3 +495,59 @@ func TestResetWindowsGrantsFreshLease(t *testing.T) {
 		t.Error("re-registered window minimizes a full timeout later")
 	}
 }
+
+// An ineffective hide (app stays visible next snapshot) must not retry every
+// tick — it backs off, and a user refocus resets the cycle.
+func TestHideRetryBackoff(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	slack := SnapApp{Pid: 300, Name: "Slack"}
+	apps := []SnapApp{terminalApp(), slack}
+	wins := []SnapWindow{win(10, 200, "Terminal"), win(30, 300, "Slack")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70))
+	if !hasApp(dec.HideApps, "Slack") {
+		t.Fatal("Slack should hide at t+70")
+	}
+
+	// Hide had no effect: Slack still visible in every following snapshot.
+	for _, sec := range []int{75, 80, 200, 360} {
+		dec = tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(sec))
+		if hasApp(dec.HideApps, "Slack") {
+			t.Fatalf("hide must back off, re-decided at t+%d", sec)
+		}
+	}
+	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(380))
+	if !hasApp(dec.HideApps, "Slack") {
+		t.Error("hide should retry after the backoff window")
+	}
+
+	// User refocuses Slack: backoff cleared, normal timeout cycle resumes.
+	tr.Update(cfg, snap(slack, 30, apps, wins), at(385))
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(390))
+	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(455))
+	if !hasApp(dec.HideApps, "Slack") {
+		t.Error("refocus must clear the hide backoff (would otherwise wait until t+680)")
+	}
+}
+
+// Focusing a deferred window clears its backoff: the defer protected a
+// failing minimize, but a user touch starts a fresh cycle.
+func TestDeferClearedOnFocus(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
+	tr.DeferWindow(2, at(300))
+
+	tr.Update(cfg, snap(chromeApp(), 2, apps, wins), at(100)) // user clicks w2
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(105))
+
+	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(170))
+	if !hasWin(dec.MinimizeWindows, 2) {
+		t.Error("focus must clear the defer; w2 is 70s idle and should minimize")
+	}
+}

@@ -13,10 +13,16 @@ import (
 // eligible next tick.
 const maxMinimizePerTick = 3
 
+// An ineffective hide (e.g. a Split View member: the request is accepted but
+// nothing hides) would otherwise be re-decided every tick via the reality
+// mirror.
+const hideRetryBackoff = 5 * time.Minute
+
 type AppState struct {
 	Pid        int32
 	LastActive time.Time
 	Hidden     bool
+	DeferUntil time.Time
 }
 
 type WindowState struct {
@@ -104,6 +110,9 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	if snap.FocusedWindowID != 0 {
 		if ws, ok := t.windows[snap.FocusedWindowID]; ok {
 			ws.LastActive = now
+			// A user touch starts a fresh cycle; the defer protected a
+			// failing minimize of an untouched window.
+			ws.DeferUntil = time.Time{}
 		}
 	}
 
@@ -133,6 +142,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
 		entry.LastActive = now
 		entry.Hidden = false
+		entry.DeferUntil = time.Time{}
 	}
 
 	var dec Decisions
@@ -144,6 +154,9 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		if name == snap.Frontmost.Name || entry.Hidden || winsByApp[name] == 0 {
 			continue
 		}
+		if now.Before(entry.DeferUntil) {
+			continue
+		}
 		timeout, disabled := cfg.EffectiveTimeout(name)
 		if disabled {
 			continue
@@ -151,6 +164,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		if now.Sub(entry.LastActive) > timeout {
 			dec.HideApps = append(dec.HideApps, AppRef{Pid: entry.Pid, Name: name})
 			entry.Hidden = true
+			entry.DeferUntil = now.Add(hideRetryBackoff)
 			hiding[name] = true
 		}
 	}

@@ -18,14 +18,18 @@ func minimizeWindow(pid: pid_t, windowID: CGWindowID) -> String? {
         return "window \(windowID) not found in pid \(pid)"
     }
 
-    // The user may have clicked this window between snapshot and now —
-    // never minimize the currently focused window.
-    var focusedRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
-       let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
-        var focusedID: CGWindowID = 0
-        if _AXUIElementGetWindow(focusedRef as! AXUIElement, &focusedID) == .success, focusedID == windowID {
-            return "window \(windowID) is currently focused"
+    // The user may have clicked this window between snapshot and now (which
+    // also makes its app frontmost) — never minimize what they're using.
+    // Gated on frontmost: a background app's AXFocusedWindow is merely its
+    // key window and must not veto.
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+        var focusedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+           let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+            var focusedID: CGWindowID = 0
+            if _AXUIElementGetWindow(focusedRef as! AXUIElement, &focusedID) == .success, focusedID == windowID {
+                return "window \(windowID) is currently focused"
+            }
         }
     }
 

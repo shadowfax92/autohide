@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	maxHelperFails  = 3
-	minimizeBackoff = 5 * time.Minute
+	maxHelperFails      = 3
+	minimizeBackoff     = 5 * time.Minute
+	helperRetryCooldown = 5 * time.Minute
 )
 
 type Daemon struct {
@@ -23,9 +24,10 @@ type Daemon struct {
 	logger  zerolog.Logger
 
 	// helper state is touched only from the tick goroutine.
-	helper       *Helper
-	helperFails  int
-	nativeActive bool
+	helper        *Helper
+	helperFails   int
+	helperRetryAt time.Time
+	nativeActive  bool
 
 	mu           sync.RWMutex
 	paused       bool
@@ -160,7 +162,10 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.helper = NewHelper(path)
 		d.logger.Info().Str("path", path).Msg("autohide-helper found")
 	}
-	if d.helperFails >= maxHelperFails {
+	// Persistent failures fall back to legacy, but probe again after a
+	// cooldown — a wake-from-sleep stall must not cost window tracking
+	// until the next daemon restart.
+	if d.helperFails >= maxHelperFails && time.Now().Before(d.helperRetryAt) {
 		d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
 		d.exitNative()
 		return false
@@ -172,8 +177,10 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.logger.Warn().Err(err).Int("consecutive", d.helperFails).Msg("window snapshot failed")
 		if d.helperFails >= maxHelperFails {
 			d.logger.Error().Msg("helper failing persistently; falling back to app-level autohide")
+			d.helperRetryAt = time.Now().Add(helperRetryCooldown)
 			d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
 			d.exitNative()
+			return false
 		}
 		return true
 	}

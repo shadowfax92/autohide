@@ -51,9 +51,10 @@ func regularApps() -> [NSRunningApplication] {
 
 func makeSnapshotJSON() -> String {
     let running = regularApps()
-    let namesByPid = Dictionary(uniqueKeysWithValues: running.map {
-        ($0.processIdentifier, $0.localizedName ?? "")
-    })
+    let namesByPid = Dictionary(
+        running.map { ($0.processIdentifier, $0.localizedName ?? "") },
+        uniquingKeysWith: { first, _ in first }
+    )
 
     let apps = running.map {
         SnapApp(pid: $0.processIdentifier, name: $0.localizedName ?? "", hidden: $0.isHidden)
