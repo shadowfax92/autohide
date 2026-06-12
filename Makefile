@@ -42,6 +42,7 @@ install: build
 	$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
 	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
 	pkill -x autohide-overlay 2>/dev/null || true
+	rm -f $(HOME)/.config/autohide/focus.json
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
 	rm -f $(APP_BIN) $(APP_DIR)/Contents/MacOS/autohide-overlay $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
@@ -63,6 +64,7 @@ uninstall:
 	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
 	pkill -f 'autohide.app/Contents/MacOS/autohide' 2>/dev/null || true
 	pkill -x autohide-overlay 2>/dev/null || true
+	rm -f $(HOME)/.config/autohide/focus.json
 	rm -f $(GOBIN)/$(APP_NAME)
 	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."
