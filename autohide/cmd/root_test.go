@@ -5,8 +5,70 @@ import (
 	"strings"
 	"testing"
 
+	"autohide/ipc"
 	"autohide/menubar"
+
+	"github.com/spf13/cobra"
 )
+
+func resetRootCommand() {
+	rootCmd.SetOut(nil)
+	rootCmd.SetErr(nil)
+	rootCmd.SetArgs(nil)
+}
+
+func TestHideAllCommandRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"hide", "all", "--help"})
+	defer resetRootCommand()
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("hide all help failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Hide all eligible background apps") {
+		t.Errorf("hide all help missing command description, got: %s", buf.String())
+	}
+}
+
+func TestRunHideAllPrintsHiddenCount(t *testing.T) {
+	old := sendHideAllCmd
+	sendHideAllCmd = func() (*ipc.HideAllData, error) {
+		return &ipc.HideAllData{Hidden: 2}, nil
+	}
+	defer func() { sendHideAllCmd = old }()
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	if err := runHideAll(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "Hidden 2 apps." {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestRunHideAllPrintsFailures(t *testing.T) {
+	old := sendHideAllCmd
+	sendHideAllCmd = func() (*ipc.HideAllData, error) {
+		return &ipc.HideAllData{Hidden: 1, Failed: 2}, nil
+	}
+	defer func() { sendHideAllCmd = old }()
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	if err := runHideAll(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "Hidden 1 app. Failed to hide 2 apps." {
+		t.Fatalf("output = %q", got)
+	}
+}
 
 func TestLaunchedViaBundle(t *testing.T) {
 	cases := []struct {
@@ -35,10 +97,7 @@ func TestRootNoArgsOutsideBundlePrintsHelp(t *testing.T) {
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{})
-	defer func() {
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-	}()
+	defer resetRootCommand()
 
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("bare root command failed: %v", err)

@@ -49,6 +49,7 @@ autohide status
 autohide status                # check daemon state (+ window-tracking mode)
 autohide list                  # see tracked apps + time-to-hide + window counts
 autohide list --windows        # expand per-window rows under each app
+autohide hide all              # immediately hide all eligible background apps
 autohide pause                 # stop hiding (presenting, screen sharing)
 autohide pause --duration 1h   # auto-resume after 1 hour
 autohide resume                # resume hiding
