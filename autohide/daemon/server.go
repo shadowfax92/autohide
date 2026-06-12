@@ -162,6 +162,10 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleResume()
 	case "list":
 		resp = s.handleList(req)
+	case "ax_prompt":
+		resp = s.handleAXPrompt()
+	case "set_timeout":
+		resp = s.handleSetTimeout(req)
 	case "focus_on":
 		s.daemon.SetFocusMode(true)
 		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: true}}
@@ -229,6 +233,31 @@ func (s *Server) handleResume() ipc.Response {
 	s.daemon.Resume()
 	s.logger.Info().Msg("daemon resumed")
 	return ipc.Response{OK: true, Data: ipc.PauseData{Paused: false}}
+}
+
+func (s *Server) handleAXPrompt() ipc.Response {
+	trusted, err := s.daemon.PromptAccessibility()
+	if err != nil {
+		return ipc.Response{Error: err.Error()}
+	}
+	s.logger.Info().Bool("ax_trusted", trusted).Msg("accessibility prompt requested")
+	return ipc.Response{OK: true, Data: ipc.AXPromptData{AXTrusted: trusted}}
+}
+
+func (s *Server) handleSetTimeout(req ipc.Request) ipc.Response {
+	raw := req.Args["duration"]
+	if raw == "" {
+		return ipc.Response{Error: "missing duration"}
+	}
+	dur, err := time.ParseDuration(raw)
+	if err != nil || dur <= 0 {
+		return ipc.Response{Error: fmt.Sprintf("invalid duration: %s", raw)}
+	}
+	if err := s.daemon.SetDefaultTimeout(dur); err != nil {
+		return ipc.Response{Error: fmt.Sprintf("saving config: %s", err)}
+	}
+	s.logger.Info().Dur("timeout", dur).Msg("default timeout updated")
+	return ipc.Response{OK: true}
 }
 
 func (s *Server) handleList(req ipc.Request) ipc.Response {

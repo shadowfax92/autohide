@@ -53,6 +53,10 @@ type PauseData struct {
 	ResumeAt string `json:"resume_at,omitempty"`
 }
 
+type AXPromptData struct {
+	AXTrusted bool `json:"ax_trusted"`
+}
+
 type FocusModeData struct {
 	Active bool `json:"active"`
 }

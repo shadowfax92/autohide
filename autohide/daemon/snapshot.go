@@ -108,6 +108,27 @@ func (h *Helper) Hide(pid int32) error {
 	return err
 }
 
+// Check reports accessibility trust; with prompt it also triggers the system
+// grant dialog (AXIsProcessTrustedWithOptions returns immediately — the
+// dialog is async — so the normal helper timeout holds).
+func (h *Helper) Check(prompt bool) (bool, error) {
+	args := []string{"check"}
+	if prompt {
+		args = append(args, "--prompt")
+	}
+	out, err := h.run(args...)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		AXTrusted bool `json:"ax_trusted"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return false, fmt.Errorf("parse check output: %w", err)
+	}
+	return result.AXTrusted, nil
+}
+
 func (h *Helper) run(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
 	defer cancel()

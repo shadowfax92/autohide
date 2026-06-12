@@ -95,6 +95,23 @@ func (d *Daemon) setAXTrusted(trusted bool) {
 	d.axTrusted = &trusted
 }
 
+// PromptAccessibility fires the system Accessibility grant dialog from the
+// daemon's own process tree so the TCC prompt registers this app's identity
+// (a UI-process prompt would register the wrong one). Locates the helper
+// per call instead of touching d.helper, which is tick-goroutine-only.
+func (d *Daemon) PromptAccessibility() (bool, error) {
+	path, err := LocateHelper()
+	if err != nil {
+		return false, err
+	}
+	trusted, err := NewHelper(path).Check(true)
+	if err != nil {
+		return false, err
+	}
+	d.setAXTrusted(trusted)
+	return trusted, nil
+}
+
 // Permissions returns the last-observed accessibility / screen-recording
 // state; nil means no helper snapshot has reported yet. Returns copies so
 // callers can't race the cache.
