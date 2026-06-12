@@ -43,9 +43,10 @@ type AppInfo struct {
 }
 
 type Tracker struct {
-	mu      sync.RWMutex
-	apps    map[string]*AppState
-	windows map[uint32]*WindowState
+	mu            sync.RWMutex
+	apps          map[string]*AppState
+	windows       map[uint32]*WindowState
+	axTrustedPrev bool
 }
 
 func NewTracker() *Tracker {
@@ -88,6 +89,18 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			delete(t.windows, id)
 		}
 	}
+	// While AX was untrusted, focus was unobservable and no window timer
+	// could refresh — their staleness is bookkeeping, not idleness. Re-lease
+	// everything on the grant so it doesn't minimize-storm. (Focused-id-0
+	// blips and desktop idling keep aging deliberately: there the user
+	// really wasn't using the windows.)
+	if snap.AXTrusted && !t.axTrustedPrev {
+		for _, ws := range t.windows {
+			ws.LastActive = now
+		}
+	}
+	t.axTrustedPrev = snap.AXTrusted
+
 	if snap.FocusedWindowID != 0 {
 		if ws, ok := t.windows[snap.FocusedWindowID]; ok {
 			ws.LastActive = now
@@ -189,6 +202,17 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 
 	return dec
+}
+
+// ResetWindows drops all per-window state. Called when the native path
+// stops observing (mode fallback, focus mode) so timers and list data can't
+// rot; on re-entry windows re-register via the appearance rule (fresh lease).
+func (t *Tracker) ResetWindows() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.windows) > 0 {
+		t.windows = make(map[uint32]*WindowState)
+	}
 }
 
 // DeferWindow backs off a window whose minimize failed so it isn't retried

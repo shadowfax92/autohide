@@ -424,3 +424,74 @@ func windowCount(infos []AppInfo, name string) int {
 	}
 	return -1
 }
+
+// While AX is untrusted, focus is unobservable and window timers can't
+// refresh — granting Accessibility mid-run must NOT minimize-storm windows
+// whose staleness is bookkeeping, not observed idleness.
+func TestAXGrantDoesNotBurstMinimize(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	untrusted := snap(chromeApp(), 0, apps, wins)
+	untrusted.AXTrusted = false
+	tr.Update(cfg, untrusted, at(0))
+	tr.Update(cfg, untrusted, at(300))
+
+	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(305))
+	if len(dec.MinimizeWindows) != 0 {
+		t.Fatalf("first trusted tick must not minimize, got %+v", dec.MinimizeWindows)
+	}
+	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(360))
+	if hasWin(dec.MinimizeWindows, 2) {
+		t.Error("window must age from the grant (55s), not from t0")
+	}
+	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(370))
+	if !hasWin(dec.MinimizeWindows, 2) {
+		t.Error("window should minimize one full timeout after the grant")
+	}
+}
+
+func TestWindowTierUsesPerAppTimeout(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Apps["Google Chrome"] = config.AppConfig{Timeout: config.Duration{Duration: 5 * time.Minute}}
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
+	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(120))
+	if hasWin(dec.MinimizeWindows, 2) {
+		t.Error("2m idle must survive a 5m per-app timeout")
+	}
+	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(310))
+	if !hasWin(dec.MinimizeWindows, 2) {
+		t.Error("window should minimize after the per-app 5m timeout")
+	}
+}
+
+// ResetWindows (mode transitions, focus mode) wipes window state; windows
+// re-register on the next tick with a fresh lease.
+func TestResetWindowsGrantsFreshLease(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
+	tr.ResetWindows()
+	if got := windowCount(tr.List(cfg), "Google Chrome"); got != 0 {
+		t.Fatalf("windows should be cleared, count = %d", got)
+	}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
+	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(100))
+	if hasWin(dec.MinimizeWindows, 2) {
+		t.Error("re-registered window must age from re-registration")
+	}
+	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(135))
+	if !hasWin(dec.MinimizeWindows, 2) {
+		t.Error("re-registered window minimizes a full timeout later")
+	}
+}

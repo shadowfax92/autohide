@@ -129,6 +129,7 @@ autohide (CLI)  ── unix socket ──▶  autohide daemon (background)
 - **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide, window minimizing waits for the grant. `autohide status` shows which mode you're in.
 - **Per-app config governs both tiers.** An app's `timeout`/`disabled` applies to hiding it and to minimizing its windows.
 - **Permissions:** **Accessibility** (System Settings > Privacy & Security) for the helper to read the focused window and minimize windows. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
+- **After reinstalling/rebuilding**, macOS may invalidate the Accessibility grant (ad-hoc code signature). If `autohide status` shows `app-only: accessibility not granted`, toggle the grant off and on again in System Settings.
 - The daemon runs via `launchd` and restarts automatically.
 
 ## Daemon management

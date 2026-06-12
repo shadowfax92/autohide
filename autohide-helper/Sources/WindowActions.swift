@@ -18,6 +18,17 @@ func minimizeWindow(pid: pid_t, windowID: CGWindowID) -> String? {
         return "window \(windowID) not found in pid \(pid)"
     }
 
+    // The user may have clicked this window between snapshot and now —
+    // never minimize the currently focused window.
+    var focusedRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+       let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+        var focusedID: CGWindowID = 0
+        if _AXUIElementGetWindow(focusedRef as! AXUIElement, &focusedID) == .success, focusedID == windowID {
+            return "window \(windowID) is currently focused"
+        }
+    }
+
     var subroleRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(target, kAXSubroleAttribute as CFString, &subroleRef) == .success,
           subroleRef as? String == kAXStandardWindowSubrole as String

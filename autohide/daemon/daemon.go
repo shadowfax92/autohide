@@ -23,8 +23,9 @@ type Daemon struct {
 	logger  zerolog.Logger
 
 	// helper state is touched only from the tick goroutine.
-	helper      *Helper
-	helperFails int
+	helper       *Helper
+	helperFails  int
+	nativeActive bool
 
 	mu           sync.RWMutex
 	paused       bool
@@ -146,12 +147,14 @@ func (d *Daemon) tick() {
 func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	if !cfg.General.WindowTracking {
 		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
+		d.exitNative()
 		return false
 	}
 	if d.helper == nil {
 		path, err := LocateHelper()
 		if err != nil {
 			d.setWindowStatus(resolveWindowStatus(true, false, 0, true))
+			d.exitNative()
 			return false
 		}
 		d.helper = NewHelper(path)
@@ -159,6 +162,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	}
 	if d.helperFails >= maxHelperFails {
 		d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+		d.exitNative()
 		return false
 	}
 
@@ -169,14 +173,23 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		if d.helperFails >= maxHelperFails {
 			d.logger.Error().Msg("helper failing persistently; falling back to app-level autohide")
 			d.setWindowStatus(resolveWindowStatus(true, true, d.helperFails, true))
+			d.exitNative()
 		}
 		return true
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	if !d.nativeActive {
+		d.nativeActive = true
+		d.tracker.ResetWindows()
+	}
 
 	now := time.Now()
 	if focusMode {
+		// Window timers can't be maintained while focus mode owns the
+		// screen; drop them so leaving focus mode re-leases instead of
+		// minimize-bursting.
+		d.tracker.ResetWindows()
 		// Focus mode: hide everything except frontmost immediately
 		for _, app := range snap.Apps {
 			if app.Hidden || app.Name == snap.Frontmost.Name {
@@ -212,8 +225,18 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	return true
 }
 
-// tickLegacy is the pre-helper osascript path, byte-for-byte the old
-// behavior: app-level tracking and System Events hides.
+// exitNative drops per-window state when leaving the helper path so list
+// data and timers can't rot unobserved; re-entry re-leases via ResetWindows
+// + the appearance rule.
+func (d *Daemon) exitNative() {
+	if d.nativeActive {
+		d.nativeActive = false
+		d.tracker.ResetWindows()
+	}
+}
+
+// tickLegacy is the pre-helper osascript path with the old app-level
+// semantics: System Events polling and whole-app hides only.
 func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 	frontmost, err := GetFrontmostApp()
 	if err != nil {
