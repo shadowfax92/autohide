@@ -3,7 +3,8 @@ OVERLAY_NAME := autohide-overlay
 HELPER_NAME  := autohide-helper
 VERSION      := 0.1.0
 BUILD_DIR    := $(CURDIR)/build
-APP_DIR      := $(HOME)/Applications/autohide.app
+APP_DIR      := /Applications/autohide.app
+LEGACY_DIR   := $(HOME)/Applications/autohide.app
 APP_BIN      := $(APP_DIR)/Contents/MacOS/$(APP_NAME)
 GOBIN        := $(shell go env GOPATH)/bin
 
@@ -37,38 +38,30 @@ icon:
 	swift scripts/make-icon.swift $(BUILD_DIR)/$(APP_NAME).iconset
 	iconutil -c icns $(BUILD_DIR)/$(APP_NAME).iconset -o assets/$(APP_NAME).icns
 
+# Stop the old daemon (via the fresh build, so this works on first install),
+# assemble the bundle, sign nested binaries then the bundle, and restart.
 install: build
+	-$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
 	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	cp $(BUILD_DIR)/$(HELPER_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
-	codesign --force --sign - $(APP_BIN)
+	cp assets/$(APP_NAME).icns $(APP_DIR)/Contents/Resources/$(APP_NAME).icns
+	sed 's/@VERSION@/$(VERSION)/' assets/Info.plist.in > $(APP_DIR)/Contents/Info.plist
 	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
-	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
-	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"\n\
-	  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
-	<plist version="1.0">\n\
-	<dict>\n\
-	    <key>CFBundleIdentifier</key>\n\
-	    <string>com.autohide.daemon</string>\n\
-	    <key>CFBundleName</key>\n\
-	    <string>autohide</string>\n\
-	    <key>CFBundleExecutable</key>\n\
-	    <string>autohide</string>\n\
-	    <key>LSUIElement</key>\n\
-	    <true/>\n\
-	</dict>\n\
-	</plist>\n' > $(APP_DIR)/Contents/Info.plist
+	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
+	codesign --force --sign - $(APP_DIR)
+	rm -rf $(LEGACY_DIR)
 	ln -sf $(APP_BIN) $(GOBIN)/$(APP_NAME)
-	-$(APP_BIN) uninstall 2>/dev/null || true
 	$(APP_BIN) install
+	@touch $(APP_DIR)
 	@echo "Installed $(APP_NAME) to $(APP_DIR) (CLI symlinked to $(GOBIN)/$(APP_NAME))"
 
 uninstall:
-	@echo "Removing $(APP_NAME) and $(OVERLAY_NAME)..."
+	@echo "Removing $(APP_NAME)..."
 	-$(APP_BIN) uninstall 2>/dev/null || true
 	rm -f $(GOBIN)/$(APP_NAME)
-	rm -rf $(APP_DIR)
+	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."
 
 clean:

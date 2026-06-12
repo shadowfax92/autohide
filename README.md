@@ -15,24 +15,27 @@ Also ships with a **floating overlay timer** for focus sessions — a small alwa
 
 ## Install
 
-Requires Go 1.21+ and Swift 5.9+ (for the overlay).
+Requires Go 1.21+ and Swift 5.9+ (for the overlay). No sudo needed.
 
 ```bash
 git clone https://github.com/your-user/mac-auto-hide.git
 cd mac-auto-hide
-sudo make install
+make install
 ```
 
-This builds both `autohide` and `autohide-overlay` into `/usr/local/bin`.
+This builds everything, installs `/Applications/autohide.app` (menu-bar app + daemon + window helper), starts it via launchd, and symlinks the `autohide` CLI into `$(go env GOPATH)/bin`.
 
 ## Quick start
 
 ```bash
-# Start the daemon (auto-starts on login)
+# make install already started the daemon (auto-starts on login).
+# Re-create the launchd service later with:
 autohide install
 
 # That's it. Apps now auto-hide after 1 minute of inactivity.
 ```
+
+Opening the app (Finder double-click or `open /Applications/autohide.app`) starts the 🫥 menu-bar daemon if it isn't already running — if a daemon is running, it's brought forward/replaced cleanly.
 
 Every command auto-starts the daemon if it isn't running, so you can also just jump straight in:
 
@@ -141,6 +144,8 @@ autohide start       # start via launchd
 autohide stop        # stop via launchd
 autohide daemon      # run in foreground (for debugging)
 ```
+
+A starting daemon takes over from any daemon already holding the IPC socket (it asks it to shut down over IPC) — so a stuck or manually-started daemon can't wedge the launchd service.
 
 Logs: `~/.config/autohide/daemon.log`
 
