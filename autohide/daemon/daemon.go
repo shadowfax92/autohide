@@ -16,11 +16,11 @@ const (
 )
 
 type Daemon struct {
-	cfgPath   string
-	cfg       *config.Config
-	tracker   *Tracker
-	focus     *FocusManager
-	logger    zerolog.Logger
+	cfgPath string
+	cfg     *config.Config
+	tracker *Tracker
+	focus   *FocusManager
+	logger  zerolog.Logger
 
 	// helper state is touched only from the tick goroutine.
 	helper      *Helper
