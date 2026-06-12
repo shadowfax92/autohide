@@ -48,15 +48,6 @@ type PauseData struct {
 	ResumeAt string `json:"resume_at,omitempty"`
 }
 
-type OverlayStatusData struct {
-	Active        bool   `json:"active"`
-	Task          string `json:"task,omitempty"`
-	Duration      string `json:"duration,omitempty"`
-	Remaining     string `json:"remaining,omitempty"`
-	Paused        bool   `json:"paused,omitempty"`
-	OverlayHidden bool   `json:"overlay_hidden,omitempty"`
-}
-
 type FocusModeData struct {
 	Active bool `json:"active"`
 }

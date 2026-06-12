@@ -1,6 +1,5 @@
 build/
 autohide/build/
-autohide-overlay/.build/
 *.exe
 *.dylib
 .DS_Store

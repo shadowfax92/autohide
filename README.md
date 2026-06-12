@@ -11,11 +11,9 @@ It works per **window**, not just per app: keep working in one Chrome window and
 
 Anything you summon back — un-hide, un-minimize, switch a Space in — gets a fresh timeout before it's touched again.
 
-Also ships with a **floating overlay timer** for focus sessions — a small always-on-top widget that counts down while you work.
-
 ## Install
 
-Requires Go 1.24+ and Swift 5.9+ (for the overlay). No sudo needed (admin account — `/Applications` is admin-writable).
+Requires Go 1.24+ and Swift 5.9+ (for the window helper). No sudo needed (admin account — `/Applications` is admin-writable).
 
 ```bash
 git clone https://github.com/your-user/mac-auto-hide.git
@@ -72,26 +70,6 @@ autohide config set default_timeout 2m
 autohide config edit
 ```
 
-### Overlay timer
-
-A floating countdown widget for focus sessions. Stays on top of all windows, visible on every desktop.
-
-<p align="center">
-  <img src="assets/overlay.png" alt="autohide overlay timer" width="360">
-</p>
-
-```bash
-autohide overlay start "API docs" 45m    # start a 45-minute session
-autohide overlay pause                    # pause the countdown
-autohide overlay resume                   # resume
-autohide overlay hide                     # hide widget, timer keeps running
-autohide overlay show                     # bring it back
-autohide overlay status                   # check remaining time
-autohide overlay stop                     # end session, dismiss widget
-```
-
-When the timer hits 0:00, the overlay turns red and stays visible until you `stop` or start a new session.
-
 ## Configuration
 
 Config lives at `~/.config/autohide/config.toml` and is created with defaults on first run.
@@ -124,8 +102,7 @@ autohide (CLI)  ── unix socket ──▶  autohide daemon (background)
                                          ├── polls autohide-helper snapshot every 5s
                                          │     (apps + on-screen windows + focused window)
                                          ├── hides apps that exceed their timeout
-                                         ├── minimizes stale windows of apps still in use
-                                         └── manages overlay timer + spawns overlay widget
+                                         └── minimizes stale windows of apps still in use
 ```
 
 - **Native snapshot.** `autohide-helper` (Swift) reads windows via CGWindowList in milliseconds and addresses them by stable window ID — no per-window AppleScript loops, no title/index matching.
@@ -153,16 +130,13 @@ Logs: `~/.config/autohide/daemon.log`
 
 ```
 mac-auto-hide/
-├── Makefile                 # builds all three targets
+├── Makefile                 # builds both targets
 ├── autohide/                # Go CLI + daemon
 │   ├── cmd/                 # cobra commands
 │   ├── config/              # TOML config
-│   ├── daemon/              # poll loop, two-tier tracker, overlay manager, IPC server
+│   ├── daemon/              # poll loop, two-tier tracker, IPC server
 │   └── ipc/                 # unix socket protocol + client
-├── autohide-helper/         # Swift window snapshot/minimize/hide helper
-│   ├── Package.swift
-│   └── Sources/
-└── autohide-overlay/        # Swift floating timer widget
+└── autohide-helper/         # Swift window snapshot/minimize/hide helper
     ├── Package.swift
     └── Sources/
 ```
