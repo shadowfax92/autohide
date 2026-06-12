@@ -11,6 +11,10 @@ import (
 	"github.com/caseymrm/menuet"
 )
 
+// BundleID is the app bundle / launchd label identity shared by the menu bar
+// app, the .app Info.plist, and the launchd plist.
+const BundleID = "com.autohide.daemon"
+
 var dm *daemon.Daemon
 
 func Run(d *daemon.Daemon) {
@@ -18,7 +22,7 @@ func Run(d *daemon.Daemon) {
 	app := menuet.App()
 	app.SetMenuState(&menuet.MenuState{Title: menuTitle()})
 	app.Children = menuItems
-	app.Label = "com.autohide.daemon"
+	app.Label = BundleID
 	go titleUpdater()
 	app.RunApplication()
 }

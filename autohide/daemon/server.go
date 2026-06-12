@@ -3,10 +3,12 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"autohide/ipc"
@@ -14,11 +16,16 @@ import (
 	"github.com/rs/zerolog"
 )
 
+var ErrAlreadyRunning = errors.New("daemon already running")
+
 type Server struct {
-	daemon   *Daemon
-	sockPath string
-	logger   zerolog.Logger
-	listener net.Listener
+	daemon       *Daemon
+	sockPath     string
+	logger       zerolog.Logger
+	listener     net.Listener
+	boundInfo    os.FileInfo
+	onShutdown   func()
+	shutdownOnce sync.Once
 }
 
 func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
@@ -29,12 +36,18 @@ func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
 	}
 }
 
+// SetOnShutdown registers the callback fired when an IPC "shutdown" request
+// arrives. Must be called before Start.
+func (s *Server) SetOnShutdown(f func()) {
+	s.onShutdown = f
+}
+
 func (s *Server) Start() error {
 	if _, err := os.Stat(s.sockPath); err == nil {
 		conn, err := net.DialTimeout("unix", s.sockPath, 500*time.Millisecond)
 		if err == nil {
 			conn.Close()
-			return fmt.Errorf("daemon already running (socket %s is active)", s.sockPath)
+			return fmt.Errorf("%w (socket %s is active)", ErrAlreadyRunning, s.sockPath)
 		}
 		os.Remove(s.sockPath)
 	}
@@ -43,6 +56,13 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.sockPath, err)
 	}
+	// Stop unlinks explicitly (and only when it still owns the path) —
+	// auto-unlink on Close would race a takeover poller that has already
+	// bound a fresh socket at this path.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
+	s.boundInfo, _ = os.Stat(s.sockPath)
 	s.listener = ln
 
 	go s.accept()
@@ -50,11 +70,54 @@ func (s *Server) Start() error {
 	return nil
 }
 
-func (s *Server) Stop() {
-	if s.listener != nil {
-		s.listener.Close()
+// StartTakeover binds like Start, but a live socket holder is asked to shut
+// down over IPC and the bind is retried until timeout. Lets a (re)starting
+// daemon displace headless ensureDaemon spawns instead of KeepAlive-thrashing.
+func (s *Server) StartTakeover(timeout time.Duration) error {
+	err := s.Start()
+	if err == nil {
+		return nil
 	}
-	os.Remove(s.sockPath)
+	if !errors.Is(err, ErrAlreadyRunning) {
+		return err
+	}
+
+	resp, serr := ipc.NewClient(s.sockPath).Send(ipc.Request{Command: "shutdown"})
+	if serr == nil && !resp.OK {
+		return fmt.Errorf("takeover: holder refused shutdown: %s", resp.Error)
+	}
+	if serr != nil {
+		// Holder vanished between probe and send — the bind retry below settles it.
+		s.logger.Info().Err(serr).Msg("socket holder gone mid-takeover, retrying bind")
+	} else {
+		s.logger.Info().Str("socket", s.sockPath).Msg("asked running daemon to shut down")
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		err := s.Start()
+		if err == nil {
+			s.logger.Info().Msg("took over socket from previous daemon")
+			return nil
+		}
+		if !errors.Is(err, ErrAlreadyRunning) {
+			return err
+		}
+	}
+	return fmt.Errorf("takeover of %s timed out after %s", s.sockPath, timeout)
+}
+
+func (s *Server) Stop() {
+	if s.listener == nil {
+		return
+	}
+	// Remove only the socket file this server bound — by the time a displaced
+	// daemon stops, a takeover poller may already own the path.
+	if cur, err := os.Stat(s.sockPath); err == nil && s.boundInfo != nil && os.SameFile(cur, s.boundInfo) {
+		os.Remove(s.sockPath)
+	}
+	s.listener.Close()
 }
 
 func (s *Server) accept() {
@@ -83,6 +146,14 @@ func (s *Server) handle(conn net.Conn) {
 
 	var resp ipc.Response
 	switch req.Command {
+	case "shutdown":
+		// Reply before firing the hook — the hook typically exits the process.
+		s.logger.Info().Msg("shutdown requested via IPC")
+		s.writeResponse(conn, ipc.Response{OK: true})
+		if s.onShutdown != nil {
+			go s.shutdownOnce.Do(s.onShutdown)
+		}
+		return
 	case "status":
 		resp = s.handleStatus()
 	case "pause":

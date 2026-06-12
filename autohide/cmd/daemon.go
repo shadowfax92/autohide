@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"autohide/config"
 	"autohide/daemon"
@@ -48,15 +49,28 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	d := daemon.New(cfg, cfgPath, logger)
 
-	sockPath := config.SocketPath()
-	srv := daemon.NewServer(d, sockPath, logger)
-	if err := srv.Start(); err != nil {
-		return err
-	}
-	defer srv.Stop()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	sockPath := config.SocketPath()
+	srv := daemon.NewServer(d, sockPath, logger)
+	srv.SetOnShutdown(func() {
+		logger.Info().Msg("shutdown requested, exiting")
+		cancel()
+	})
+	// Only the menu-bar instance (launchd agent / app launch) may displace a
+	// live daemon. Headless ensureDaemon spawns just yield, else two
+	// concurrent CLI calls duel and kill each other's fresh daemon.
+	var startErr error
+	if noMenubar {
+		startErr = srv.Start()
+	} else {
+		startErr = srv.StartTakeover(5 * time.Second)
+	}
+	if startErr != nil {
+		return startErr
+	}
+	defer srv.Stop()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -75,6 +89,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		if err := d.Run(ctx); err != nil {
 			logger.Error().Err(err).Msg("daemon error")
 		}
+		// menuet's RunApplication never returns, so exit here — but release
+		// the socket first since os.Exit skips the deferred Stop.
+		srv.Stop()
 		os.Exit(0)
 	}()
 
