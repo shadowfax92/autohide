@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"autohide/ipc"
 
@@ -62,5 +65,89 @@ func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 	data := resp.Data.(ipc.StatusData)
 	if data.WindowTracking != "starting" {
 		t.Errorf("window_tracking = %q, want starting (pre-first-tick)", data.WindowTracking)
+	}
+}
+
+// tempSock avoids t.TempDir(): test names push the path past the 104-char
+// unix socket limit on macOS.
+func tempSock(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ah")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "d.sock")
+}
+
+func liveServer(t *testing.T, sock string) *Server {
+	t.Helper()
+	return NewServer(New(testCfg(), "", zerolog.Nop()), sock, zerolog.Nop())
+}
+
+func TestShutdownRepliesOKThenFiresHook(t *testing.T) {
+	sock := tempSock(t)
+	srv := liveServer(t, sock)
+	fired := make(chan struct{})
+	srv.SetOnShutdown(func() { close(fired) })
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "shutdown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Fatalf("shutdown not OK: %s", resp.Error)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown hook never fired")
+	}
+}
+
+func TestShutdownWithoutHookKeepsServing(t *testing.T) {
+	sock := tempSock(t)
+	srv := liveServer(t, sock)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "shutdown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Fatalf("shutdown not OK: %s", resp.Error)
+	}
+
+	resp, err = ipc.NewClient(sock).Send(ipc.Request{Command: "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Fatalf("server stopped serving after hook-less shutdown: %s", resp.Error)
+	}
+}
+
+func TestUnknownCommandStillErrors(t *testing.T) {
+	sock := tempSock(t)
+	srv := liveServer(t, sock)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	resp, err := ipc.NewClient(sock).Send(ipc.Request{Command: "bogus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.OK || resp.Error == "" {
+		t.Fatalf("expected unknown-command error, got %+v", resp)
 	}
 }

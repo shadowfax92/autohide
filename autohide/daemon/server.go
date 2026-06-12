@@ -15,10 +15,11 @@ import (
 )
 
 type Server struct {
-	daemon   *Daemon
-	sockPath string
-	logger   zerolog.Logger
-	listener net.Listener
+	daemon     *Daemon
+	sockPath   string
+	logger     zerolog.Logger
+	listener   net.Listener
+	onShutdown func()
 }
 
 func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
@@ -27,6 +28,12 @@ func NewServer(d *Daemon, sockPath string, logger zerolog.Logger) *Server {
 		sockPath: sockPath,
 		logger:   logger,
 	}
+}
+
+// SetOnShutdown registers the callback fired when an IPC "shutdown" request
+// arrives. Must be called before Start.
+func (s *Server) SetOnShutdown(f func()) {
+	s.onShutdown = f
 }
 
 func (s *Server) Start() error {
@@ -83,6 +90,14 @@ func (s *Server) handle(conn net.Conn) {
 
 	var resp ipc.Response
 	switch req.Command {
+	case "shutdown":
+		// Reply before firing the hook — the hook typically exits the process.
+		s.logger.Info().Msg("shutdown requested via IPC")
+		s.writeResponse(conn, ipc.Response{OK: true})
+		if s.onShutdown != nil {
+			go s.onShutdown()
+		}
+		return
 	case "status":
 		resp = s.handleStatus()
 	case "pause":
