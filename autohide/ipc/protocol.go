@@ -19,6 +19,11 @@ type StatusData struct {
 	TrackedCount   int    `json:"tracked_count"`
 	ResumeAt       string `json:"resume_at,omitempty"`
 	WindowTracking string `json:"window_tracking,omitempty"`
+	// Permission state is nil until the daemon's first native tick observes it.
+	AXTrusted       *bool    `json:"ax_trusted,omitempty"`
+	ScreenRecording *bool    `json:"screen_recording,omitempty"`
+	DefaultTimeout  string   `json:"default_timeout,omitempty"`
+	TimeoutPresets  []string `json:"timeout_presets,omitempty"`
 }
 
 type WindowInfo struct {

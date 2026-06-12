@@ -120,7 +120,7 @@ func menuItems() []menuet.MenuItem {
 }
 
 func timeoutSubmenuTitle(cfg *config.Config) string {
-	return fmt.Sprintf("Timeout: %s", formatDuration(cfg.General.DefaultTimeout.Duration))
+	return fmt.Sprintf("Timeout: %s", config.FormatDuration(cfg.General.DefaultTimeout.Duration))
 }
 
 func timeoutItems(cfg *config.Config) []menuet.MenuItem {
@@ -134,7 +134,7 @@ func timeoutItems(cfg *config.Config) []menuet.MenuItem {
 	for _, p := range presets {
 		dur := p.Duration
 		items = append(items, menuet.MenuItem{
-			Text:  formatDuration(dur),
+			Text:  config.FormatDuration(dur),
 			State: dur == current,
 			Clicked: func() {
 				dm.SetDefaultTimeout(dur)
@@ -143,19 +143,4 @@ func timeoutItems(cfg *config.Config) []menuet.MenuItem {
 		})
 	}
 	return items
-}
-
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		if s == 0 {
-			return fmt.Sprintf("%dm", m)
-		}
-		return fmt.Sprintf("%dm%ds", m, s)
-	}
-	return d.String()
 }

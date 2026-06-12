@@ -34,6 +34,9 @@ type Daemon struct {
 	focusMode    bool
 	startTime    time.Time
 	windowStatus string
+	// nil until a helper snapshot (or ax_prompt) reports them.
+	axTrusted       *bool
+	screenRecording *bool
 }
 
 func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
@@ -77,6 +80,36 @@ func (d *Daemon) WindowTrackingStatus() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.windowStatus
+}
+
+func (d *Daemon) setPermissions(axTrusted, screenRecording bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.axTrusted = &axTrusted
+	d.screenRecording = &screenRecording
+}
+
+func (d *Daemon) setAXTrusted(trusted bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.axTrusted = &trusted
+}
+
+// Permissions returns the last-observed accessibility / screen-recording
+// state; nil means no helper snapshot has reported yet. Returns copies so
+// callers can't race the cache.
+func (d *Daemon) Permissions() (axTrusted, screenRecording *bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.axTrusted != nil {
+		v := *d.axTrusted
+		axTrusted = &v
+	}
+	if d.screenRecording != nil {
+		v := *d.screenRecording
+		screenRecording = &v
+	}
+	return axTrusted, screenRecording
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -181,6 +214,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	d.setPermissions(snap.AXTrusted, snap.ScreenRecording)
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()

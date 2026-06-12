@@ -37,6 +37,7 @@ type SnapWindow struct {
 // apps, on-screen windows of the current Space, and what has focus.
 type Snapshot struct {
 	AXTrusted       bool         `json:"ax_trusted"`
+	ScreenRecording bool         `json:"screen_recording"`
 	Frontmost       AppRef       `json:"frontmost"`
 	FocusedWindowID uint32       `json:"focused_window_id"`
 	Apps            []SnapApp    `json:"apps"`

@@ -23,6 +23,24 @@ func (d Duration) MarshalText() ([]byte, error) {
 	return []byte(d.Duration.String()), nil
 }
 
+// FormatDuration renders short user-facing durations ("30s", "1m", "2m30s")
+// the way the menu bar and status surfaces display them; hours fall back to
+// Go's verbose form.
+func FormatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	return d.String()
+}
+
 type GeneralConfig struct {
 	DefaultTimeout Duration `toml:"default_timeout"`
 	CheckInterval  Duration `toml:"check_interval"`

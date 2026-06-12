@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"autohide/config"
 	"autohide/ipc"
 
 	"github.com/rs/zerolog"
@@ -178,13 +179,27 @@ func (s *Server) handle(conn net.Conn) {
 
 func (s *Server) handleStatus() ipc.Response {
 	paused, resumeAt := s.daemon.IsPaused()
+	axTrusted, screenRecording := s.daemon.Permissions()
+	cfg := s.daemon.Config()
+	presets := cfg.Menubar.TimeoutPresets
+	if len(presets) == 0 {
+		presets = config.Default().Menubar.TimeoutPresets
+	}
+	presetLabels := make([]string, 0, len(presets))
+	for _, p := range presets {
+		presetLabels = append(presetLabels, config.FormatDuration(p.Duration))
+	}
 	data := ipc.StatusData{
-		Running:        true,
-		Paused:         paused,
-		FocusMode:      s.daemon.IsFocusMode(),
-		Uptime:         s.daemon.Uptime().Round(time.Second).String(),
-		TrackedCount:   s.daemon.TrackerCount(),
-		WindowTracking: s.daemon.WindowTrackingStatus(),
+		Running:         true,
+		Paused:          paused,
+		FocusMode:       s.daemon.IsFocusMode(),
+		Uptime:          s.daemon.Uptime().Round(time.Second).String(),
+		TrackedCount:    s.daemon.TrackerCount(),
+		WindowTracking:  s.daemon.WindowTrackingStatus(),
+		AXTrusted:       axTrusted,
+		ScreenRecording: screenRecording,
+		DefaultTimeout:  config.FormatDuration(cfg.General.DefaultTimeout.Duration),
+		TimeoutPresets:  presetLabels,
 	}
 	if resumeAt != nil {
 		data.ResumeAt = resumeAt.Format(time.RFC3339)

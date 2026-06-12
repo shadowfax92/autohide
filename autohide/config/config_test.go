@@ -87,3 +87,22 @@ func writeConfig(t *testing.T, content string) string {
 	}
 	return path
 }
+
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{30 * time.Second, "30s"},
+		{time.Minute, "1m"},
+		{2 * time.Minute, "2m"},
+		{2*time.Minute + 30*time.Second, "2m30s"},
+		{5 * time.Minute, "5m"},
+		{time.Hour, "1h0m0s"},
+	}
+	for _, c := range cases {
+		if got := FormatDuration(c.in); got != c.want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -27,6 +27,7 @@ struct Frontmost: Encodable {
 
 struct SnapshotPayload: Encodable {
     let axTrusted: Bool
+    let screenRecording: Bool
     let frontmost: Frontmost
     let focusedWindowId: UInt32
     let apps: [SnapApp]
@@ -34,6 +35,7 @@ struct SnapshotPayload: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case axTrusted = "ax_trusted"
+        case screenRecording = "screen_recording"
         case frontmost
         case focusedWindowId = "focused_window_id"
         case apps
@@ -94,6 +96,7 @@ func makeSnapshotJSON() -> String {
 
     let payload = SnapshotPayload(
         axTrusted: trusted,
+        screenRecording: CGPreflightScreenCaptureAccess(),
         frontmost: frontmost,
         focusedWindowId: focusedID,
         apps: apps,

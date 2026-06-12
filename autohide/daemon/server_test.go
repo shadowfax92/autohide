@@ -70,6 +70,51 @@ func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 	}
 }
 
+func TestHandleStatusPermissionsUnknownBeforeFirstTick(t *testing.T) {
+	s := seededServer(t)
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted != nil || data.ScreenRecording != nil {
+		t.Errorf("permissions must be unknown pre-tick, got ax=%v sr=%v", data.AXTrusted, data.ScreenRecording)
+	}
+	if data.DefaultTimeout != "1m" {
+		t.Errorf("default_timeout = %q, want 1m", data.DefaultTimeout)
+	}
+	want := []string{"30s", "1m", "2m", "5m"}
+	if len(data.TimeoutPresets) != len(want) {
+		t.Fatalf("timeout_presets = %v, want %v", data.TimeoutPresets, want)
+	}
+	for i, p := range want {
+		if data.TimeoutPresets[i] != p {
+			t.Errorf("timeout_presets[%d] = %q, want %q", i, data.TimeoutPresets[i], p)
+		}
+	}
+}
+
+const mixedPermissionsSnapshotJSON = `{
+  "ax_trusted": true,
+  "screen_recording": false,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [{"pid": 100, "name": "Google Chrome", "hidden": false}],
+  "windows": [{"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"}]
+}`
+
+func TestHandleStatusPermissionsAfterSnapshot(t *testing.T) {
+	d := testDaemon(t, "#!/bin/sh\ncat <<'JSON'\n"+mixedPermissionsSnapshotJSON+"\nJSON\n")
+	if !d.tickNative(d.cfg, false) {
+		t.Fatal("native tick should run")
+	}
+
+	s := NewServer(d, "", zerolog.Nop())
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.AXTrusted == nil || !*data.AXTrusted {
+		t.Errorf("ax_trusted = %v, want true", data.AXTrusted)
+	}
+	if data.ScreenRecording == nil || *data.ScreenRecording {
+		t.Errorf("screen_recording = %v, want false", data.ScreenRecording)
+	}
+}
+
 // tempSock avoids t.TempDir(): test names push the path past the 104-char
 // unix socket limit on macOS.
 func tempSock(t *testing.T) string {
