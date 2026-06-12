@@ -6,3 +6,4 @@ autohide-overlay/.build/
 .DS_Store
 .llm/
 autohide-helper/.build/
+.grove/
