@@ -119,7 +119,7 @@ func (d *Daemon) tick() {
 		}
 	} else {
 		// Normal mode: timeout-based hiding
-		toHide := d.tracker.Update(cfg, frontmost, visible)
+		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, time.Now())
 		for _, name := range toHide {
 			d.logger.Info().Str("app", name).Msg("hiding inactive app")
 			if err := HideApp(name); err != nil {
