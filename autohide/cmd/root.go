@@ -23,6 +23,10 @@ func SetVersion(v string) {
 	version = v
 }
 
+// runDaemonFn is swappable so tests can exercise the bundle-launch path
+// without starting a real daemon.
+var runDaemonFn = runDaemon
+
 var rootCmd = &cobra.Command{
 	Use:   "autohide",
 	Short: "Auto-hide inactive macOS application windows",
@@ -32,7 +36,13 @@ var rootCmd = &cobra.Command{
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if launchedViaBundle() {
-			return runDaemon(cmd, args)
+			// Finder launch doubles as "show me the app": open the window
+			// (it polls until the daemon below is up). Old installs without
+			// the UI binary just run the daemon as before.
+			if err := spawnUIFn(); err != nil {
+				fmt.Fprintf(os.Stderr, "autohide: cannot open window: %v\n", err)
+			}
+			return runDaemonFn(cmd, args)
 		}
 		return cmd.Help()
 	},

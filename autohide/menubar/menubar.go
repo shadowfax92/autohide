@@ -54,6 +54,14 @@ func menuItems() []menuet.MenuItem {
 
 	var items []menuet.MenuItem
 
+	items = append(items, menuet.MenuItem{
+		Text: "Open autohide…",
+		Clicked: func() {
+			daemon.SpawnUI()
+		},
+	})
+	items = append(items, menuet.MenuItem{Type: menuet.Separator})
+
 	statusText := fmt.Sprintf("Active  (%d apps tracked)", tracked)
 	if paused {
 		statusText = "Paused"

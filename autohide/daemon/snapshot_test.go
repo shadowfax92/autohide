@@ -147,10 +147,49 @@ func TestHelperFailurePropagatesStderr(t *testing.T) {
 }
 
 func writeFakeHelper(t *testing.T, dir, script string) string {
+	return writeFakeBinary(t, dir, helperName, script)
+}
+
+func writeFakeBinary(t *testing.T, dir, name, script string) string {
 	t.Helper()
-	path := filepath.Join(dir, helperName)
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestLocateUIPrefersSiblingDir(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakeBinary(t, dir, uiName, "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", "")
+
+	got, err := locateBinary(uiName, []string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
+func TestLocateUIFallsBackToPath(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakeBinary(t, dir, uiName, "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+
+	got, err := locateBinary(uiName, []string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+}
+
+func TestLocateUINotFound(t *testing.T) {
+	t.Setenv("PATH", "")
+	if _, err := locateBinary(uiName, []string{t.TempDir()}); err == nil {
+		t.Error("expected not-found error")
+	}
 }

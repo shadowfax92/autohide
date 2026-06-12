@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const helperName = "autohide-helper"
+const (
+	helperName = "autohide-helper"
+	uiName     = "autohide-ui"
+)
 
 type AppRef struct {
 	Pid  int32  `json:"pid"`
@@ -70,24 +73,52 @@ func NewHelper(path string) *Helper {
 // LocateHelper finds autohide-helper next to the daemon binary (the .app
 // bundle layout) or on PATH (dev runs).
 func LocateHelper() (string, error) {
+	return locateBinary(helperName, siblingDirs())
+}
+
+// LocateUI finds the bundled window app the same way.
+func LocateUI() (string, error) {
+	return locateBinary(uiName, siblingDirs())
+}
+
+// SpawnUI launches the window app detached; the UI handles single-instancing
+// itself (a second launch activates the first and exits).
+func SpawnUI() error {
+	path, err := LocateUI()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(path)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+	return nil
+}
+
+func siblingDirs() []string {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
 		dirs = append(dirs, filepath.Dir(exe))
 	}
-	return locateHelper(dirs)
+	return dirs
 }
 
 func locateHelper(dirs []string) (string, error) {
+	return locateBinary(helperName, dirs)
+}
+
+func locateBinary(name string, dirs []string) (string, error) {
 	for _, dir := range dirs {
-		path := filepath.Join(dir, helperName)
+		path := filepath.Join(dir, name)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
 			return path, nil
 		}
 	}
-	if path, err := exec.LookPath(helperName); err == nil {
+	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf("%s not found next to daemon or on PATH", helperName)
+	return "", fmt.Errorf("%s not found next to daemon or on PATH", name)
 }
 
 func (h *Helper) Snapshot() (*Snapshot, error) {

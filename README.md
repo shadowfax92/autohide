@@ -33,7 +33,7 @@ autohide install
 # That's it. Apps now auto-hide after 1 minute of inactivity.
 ```
 
-Opening the app (Finder double-click or `open /Applications/autohide.app`) starts the 🫥 menu-bar daemon if one isn't running. If the menu-bar daemon is already up, opening the app is a no-op; a headless daemon gets replaced by the menu-bar one.
+Opening the app (Finder double-click or `open /Applications/autohide.app`) starts the 🫥 menu-bar daemon if one isn't running **and opens the autohide window** — grant Accessibility from there and you're done. If the menu-bar daemon is already up, opening the app is a no-op (use the menu-bar's "Open autohide…" or `autohide ui` instead); a headless daemon gets replaced by the menu-bar one.
 
 Every command auto-starts the daemon if it isn't running, so you can also just jump straight in:
 
@@ -42,6 +42,17 @@ autohide status
 ```
 
 ## Usage
+
+### The window
+
+A clean light-theme control panel for everything below — live status, the
+tracked-apps list with per-window countdowns, pause/focus/timeout controls,
+and one-click **Accessibility** granting (it fires the system prompt and
+deep-links System Settings).
+
+```bash
+autohide ui      # or: menu bar 🫥 → "Open autohide…"
+```
 
 ### Auto-hiding
 
@@ -97,8 +108,8 @@ Changes take effect within 5 seconds — the daemon hot-reloads the config file.
 ## How it works
 
 ```
-autohide (CLI)  ── unix socket ──▶  autohide daemon (background)
-                                         │
+autohide (CLI)      ── unix socket ──▶  autohide daemon (background)
+autohide-ui (window) ── unix socket ──▶       │
                                          ├── polls autohide-helper snapshot every 5s
                                          │     (apps + on-screen windows + focused window)
                                          ├── hides apps that exceed their timeout
@@ -108,7 +119,7 @@ autohide (CLI)  ── unix socket ──▶  autohide daemon (background)
 - **Native snapshot.** `autohide-helper` (Swift) reads windows via CGWindowList in milliseconds and addresses them by stable window ID — no per-window AppleScript loops, no title/index matching.
 - **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide, window minimizing waits for the grant. `autohide status` shows which mode you're in.
 - **Per-app config governs both tiers.** An app's `timeout`/`disabled` applies to hiding it and to minimizing its windows.
-- **Permissions:** **Accessibility** (System Settings > Privacy & Security) for the helper to read the focused window and minimize windows. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
+- **Permissions:** **Accessibility** (System Settings > Privacy & Security) for the helper to read the focused window and minimize windows — grant it from the window (`autohide ui` → Settings) or System Settings. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
 - **After reinstalling/rebuilding**, macOS may invalidate the Accessibility grant (ad-hoc code signature). If `autohide status` shows `app-only: accessibility not granted`, toggle the grant off and on again in System Settings.
 - The daemon runs via `launchd` and restarts automatically.
 
@@ -130,15 +141,19 @@ Logs: `~/.config/autohide/daemon.log`
 
 ```
 mac-auto-hide/
-├── Makefile                 # builds both targets
+├── Makefile                 # builds all three targets
 ├── autohide/                # Go CLI + daemon
 │   ├── cmd/                 # cobra commands
 │   ├── config/              # TOML config
 │   ├── daemon/              # poll loop, two-tier tracker, IPC server
 │   └── ipc/                 # unix socket protocol + client
-└── autohide-helper/         # Swift window snapshot/minimize/hide helper
+├── autohide-helper/         # Swift window snapshot/minimize/hide helper
+│   ├── Package.swift
+│   └── Sources/
+└── autohide-ui/             # Swift status/permissions window (SwiftUI)
     ├── Package.swift
-    └── Sources/
+    ├── Sources/
+    └── Tests/
 ```
 
 ## License
