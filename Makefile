@@ -1,5 +1,4 @@
 APP_NAME     := autohide
-OVERLAY_NAME := autohide-overlay
 HELPER_NAME  := autohide-helper
 VERSION      := 0.1.0
 BUILD_DIR    := $(CURDIR)/build
@@ -11,20 +10,15 @@ GOBIN        := $(shell go env GOPATH)/bin
 GOARCH  := $(shell go env GOARCH)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build build-cli build-overlay build-helper icon install uninstall clean tidy
+.PHONY: all build build-cli build-helper icon install uninstall clean tidy
 
 all: build
 
-build: build-cli build-overlay build-helper
+build: build-cli build-helper
 
 build-cli:
 	@mkdir -p $(BUILD_DIR)
 	cd $(APP_NAME) && GOOS=darwin GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME) .
-
-build-overlay:
-	@mkdir -p $(BUILD_DIR)
-	cd $(OVERLAY_NAME) && swift build -c release
-	cp $(OVERLAY_NAME)/.build/release/$(OVERLAY_NAME) $(BUILD_DIR)/$(OVERLAY_NAME)
 
 build-helper:
 	@mkdir -p $(BUILD_DIR)
@@ -42,18 +36,19 @@ icon:
 # assemble the bundle, sign nested binaries then the bundle, and restart.
 # The pkill catches daemons too old to honor IPC-shutdown takeover (they exit
 # gracefully on SIGTERM); without it the new agent thrashes against them.
+# The autohide-overlay pkill/rm reap what pre-removal installs shipped: the
+# daemon-side orphan cleanup is gone, so a stale widget would float forever.
 install: build
 	$(BUILD_DIR)/$(APP_NAME) uninstall 2>/dev/null || true
 	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
+	pkill -x autohide-overlay 2>/dev/null || true
 	@mkdir -p $(APP_DIR)/Contents/MacOS $(APP_DIR)/Contents/Resources
-	rm -f $(APP_BIN) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
+	rm -f $(APP_BIN) $(APP_DIR)/Contents/MacOS/autohide-overlay $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	cp $(BUILD_DIR)/$(APP_NAME) $(APP_BIN)
-	cp $(BUILD_DIR)/$(OVERLAY_NAME) $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	cp $(BUILD_DIR)/$(HELPER_NAME) $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
 	cp assets/$(APP_NAME).icns $(APP_DIR)/Contents/Resources/$(APP_NAME).icns
 	sed 's/@VERSION@/$(VERSION)/' assets/Info.plist.in > $(APP_DIR)/Contents/Info.plist
 	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(HELPER_NAME)
-	codesign --force --sign - $(APP_DIR)/Contents/MacOS/$(OVERLAY_NAME)
 	codesign --force --sign - $(APP_DIR)
 	rm -rf $(LEGACY_DIR)
 	@mkdir -p $(GOBIN)
@@ -67,13 +62,13 @@ uninstall:
 	$(APP_BIN) uninstall 2>/dev/null || true
 	pkill -f '(^|/)autohide daemon' 2>/dev/null || true
 	pkill -f 'autohide.app/Contents/MacOS/autohide' 2>/dev/null || true
+	pkill -x autohide-overlay 2>/dev/null || true
 	rm -f $(GOBIN)/$(APP_NAME)
 	rm -rf $(APP_DIR) $(LEGACY_DIR)
 	@echo "Done."
 
 clean:
 	rm -rf $(BUILD_DIR)
-	-cd $(OVERLAY_NAME) && swift package clean 2>/dev/null || true
 	-cd $(HELPER_NAME) && swift package clean 2>/dev/null || true
 
 tidy:
