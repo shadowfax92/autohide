@@ -8,11 +8,6 @@ import (
 	"autohide/config"
 )
 
-// More than this per tick turns into a genie-animation storm (e.g. right
-// after pause->resume when everything expired at once); the remainder stays
-// eligible next tick.
-const maxMinimizePerTick = 3
-
 // An ineffective hide (e.g. a Split View member: the request is accepted but
 // nothing hides) would otherwise be re-decided every tick via the reality
 // mirror.
@@ -30,7 +25,6 @@ type WindowState struct {
 	App        string
 	Title      string
 	LastActive time.Time
-	DeferUntil time.Time
 }
 
 type WindowDetail struct {
@@ -62,14 +56,14 @@ func NewTracker() *Tracker {
 	}
 }
 
-// Update reconciles tracker state with one helper snapshot and decides this
-// tick's actions. Two tiers: stale apps hide whole (clean cmd-tab restore),
-// stale windows of still-in-use apps minimize individually. Windows of an
-// app being hidden are left to the app tier so they don't strand in the
-// Dock. Refresh rules: focused window; any window that (re)appears (fresh
-// lease for it AND its app — nothing just summoned gets insta-hidden);
-// frontmost app. Deliberately NO sibling refresh on app activation, or stale
-// windows would never age out while the user bounces between apps.
+// Update reconciles tracker state with one helper snapshot and decides which
+// stale apps to hide whole (clean cmd-tab restore). Windows are tracked, not
+// acted on: their state powers the fresh-lease rule (a window (re)appearing
+// re-leases it AND its app, so nothing just summoned gets insta-hidden) and
+// the per-window rows in `autohide list`. Refresh rules: focused window; any
+// window that (re)appears; frontmost app. Deliberately NO sibling refresh on
+// app activation, or windows would never age out while the user bounces
+// between apps.
 func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Decisions {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -97,9 +91,9 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 	// While AX was untrusted, focus was unobservable and no window timer
 	// could refresh — their staleness is bookkeeping, not idleness. Re-lease
-	// everything on the grant so it doesn't minimize-storm. (Focused-id-0
-	// blips and desktop idling keep aging deliberately: there the user
-	// really wasn't using the windows.)
+	// everything on the grant so `list` doesn't show every window as long
+	// idle. (Focused-id-0 blips and desktop idling keep aging deliberately:
+	// there the user really wasn't using the windows.)
 	if snap.AXTrusted && !t.axTrustedPrev {
 		for _, ws := range t.windows {
 			ws.LastActive = now
@@ -110,9 +104,6 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	if snap.FocusedWindowID != 0 {
 		if ws, ok := t.windows[snap.FocusedWindowID]; ok {
 			ws.LastActive = now
-			// A user touch starts a fresh cycle; the defer protected a
-			// failing minimize of an untouched window.
-			ws.DeferUntil = time.Time{}
 		}
 	}
 
@@ -147,7 +138,6 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 
 	var dec Decisions
 
-	hiding := make(map[string]bool)
 	for name, entry := range t.apps {
 		// Zero-window apps: hiding them is invisible and re-hide loops
 		// after unhide; skip.
@@ -165,55 +155,11 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			dec.HideApps = append(dec.HideApps, AppRef{Pid: entry.Pid, Name: name})
 			entry.Hidden = true
 			entry.DeferUntil = now.Add(hideRetryBackoff)
-			hiding[name] = true
 		}
 	}
 	sort.Slice(dec.HideApps, func(i, j int) bool {
 		return dec.HideApps[i].Name < dec.HideApps[j].Name
 	})
-
-	// Never minimize blind: a tick without a positively identified focused
-	// window (or without AX) makes no window-tier moves.
-	if !snap.AXTrusted || snap.FocusedWindowID == 0 {
-		return dec
-	}
-
-	type candidate struct {
-		id uint32
-		ws *WindowState
-	}
-	var cands []candidate
-	for id, ws := range t.windows {
-		if id == snap.FocusedWindowID || hiding[ws.App] {
-			continue
-		}
-		entry, ok := t.apps[ws.App]
-		if !ok || entry.Hidden {
-			continue
-		}
-		timeout, disabled := cfg.EffectiveTimeout(ws.App)
-		if disabled {
-			continue
-		}
-		if now.Sub(ws.LastActive) <= timeout || now.Before(ws.DeferUntil) {
-			continue
-		}
-		cands = append(cands, candidate{id, ws})
-	}
-	sort.Slice(cands, func(i, j int) bool {
-		if !cands[i].ws.LastActive.Equal(cands[j].ws.LastActive) {
-			return cands[i].ws.LastActive.Before(cands[j].ws.LastActive)
-		}
-		return cands[i].id < cands[j].id
-	})
-	if len(cands) > maxMinimizePerTick {
-		cands = cands[:maxMinimizePerTick]
-	}
-	for _, c := range cands {
-		dec.MinimizeWindows = append(dec.MinimizeWindows, WindowRef{
-			ID: c.id, Pid: c.ws.Pid, App: c.ws.App, Title: c.ws.Title,
-		})
-	}
 
 	return dec
 }
@@ -226,16 +172,6 @@ func (t *Tracker) ResetWindows() {
 	defer t.mu.Unlock()
 	if len(t.windows) > 0 {
 		t.windows = make(map[uint32]*WindowState)
-	}
-}
-
-// DeferWindow backs off a window whose minimize failed so it isn't retried
-// every tick.
-func (t *Tracker) DeferWindow(id uint32, until time.Time) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if ws, ok := t.windows[id]; ok {
-		ws.DeferUntil = until
 	}
 }
 

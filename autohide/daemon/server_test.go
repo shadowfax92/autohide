@@ -54,8 +54,8 @@ func TestHandleListWindowDetail(t *testing.T) {
 	titles := map[uint32]string{}
 	for _, w := range data.Apps[0].Windows {
 		titles[w.ID] = w.Title
-		if w.TimeRemaining == "" || w.LastActive == "" {
-			t.Errorf("window %d missing remaining/last-active: %+v", w.ID, w)
+		if w.LastActive == "" {
+			t.Errorf("window %d missing last-active: %+v", w.ID, w)
 		}
 	}
 	if titles[1] != "Docs" || titles[2] != "" {

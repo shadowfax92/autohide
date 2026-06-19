@@ -83,12 +83,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			if runes := []rune(title); len(runes) > 40 {
 				title = string(runes[:37]) + "..."
 			}
-			winRemaining := win.TimeRemaining
-			if app.Disabled || app.Hidden {
-				winRemaining = "-"
-			}
-			fmt.Fprintf(w, "  · %s\t\t%s\t\t%s\t\n",
-				title, agoString(now, win.LastActive), winRemaining)
+			fmt.Fprintf(w, "  · %s\t\t%s\t\t\t\n", title, agoString(now, win.LastActive))
 		}
 	}
 

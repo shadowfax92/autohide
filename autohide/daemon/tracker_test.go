@@ -43,109 +43,69 @@ func hasApp(refs []AppRef, name string) bool {
 	return false
 }
 
-func hasWin(refs []WindowRef, id uint32) bool {
-	for _, r := range refs {
-		if r.ID == id {
-			return true
+func windowCount(infos []AppInfo, name string) int {
+	for _, info := range infos {
+		if info.Name == name {
+			return len(info.Windows)
 		}
 	}
-	return false
+	return -1
 }
 
-// Working in Chrome window 1: stale sibling window 2 minimizes after the
-// timeout; the focused window and the frontmost app are never touched.
-func TestSiblingOfFrontmostMinimizesAfterTimeout(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp()}
-	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	if len(dec.HideApps) != 0 || len(dec.MinimizeWindows) != 0 {
-		t.Fatalf("first tick should be quiet, got %+v", dec)
+func windowLastActive(infos []AppInfo, id uint32) (time.Time, bool) {
+	for _, info := range infos {
+		for _, w := range info.Windows {
+			if w.ID == id {
+				return w.LastActive, true
+			}
+		}
 	}
-
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(30))
-	if len(dec.MinimizeWindows) != 0 {
-		t.Fatalf("nothing expired at 30s, got %+v", dec.MinimizeWindows)
-	}
-
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("stale sibling window 2 should minimize")
-	}
-	if hasWin(dec.MinimizeWindows, 1) {
-		t.Error("focused window must never minimize")
-	}
-	if hasApp(dec.HideApps, "Google Chrome") {
-		t.Error("frontmost app must never hide")
-	}
+	return time.Time{}, false
 }
 
-// Bouncing Terminal<->Chrome keeps Chrome's app timer fresh, but the stale
-// Chrome window must still minimize — the core 49"-monitor workflow.
-func TestBounceWorkflowStillMinimizesStaleSibling(t *testing.T) {
+// --- App-hide tier ---
+
+// A stale background app hides once its timeout passes; the frontmost app is
+// never touched.
+func TestStaleAppHides(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	apps := []SnapApp{chromeApp(), terminalApp()}
-	wins := []SnapWindow{
-		win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome"),
-		win(10, 200, "Terminal"),
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(30))
+	if len(dec.HideApps) != 0 {
+		t.Fatalf("nothing should hide at 30s, got %+v", dec.HideApps)
 	}
 
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(20))
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(40))
-
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("window 2 (untouched since t0) should minimize despite app bouncing")
-	}
-	if hasApp(dec.HideApps, "Google Chrome") || hasApp(dec.HideApps, "Terminal") {
-		t.Errorf("no app should hide, got %+v", dec.HideApps)
-	}
-}
-
-// A background app that was recently used: its stale window minimizes while
-// the app survives; once the whole app expires, the app tier takes over and
-// its windows are NOT individually minimized (no Dock-stranding).
-func TestBackgroundAppWindowTierThenAppTierPrecedence(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp(), terminalApp()}
-	chromeWins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-	allWins := append([]SnapWindow{win(10, 200, "Terminal")}, chromeWins...)
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(0))
-	tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(10)) // w1 refreshed at 10
-	// switch to Terminal
-	tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(11))
-
-	// t+65: Chrome app last frontmost at 11 (54s, fresh); w2 last at 0 (65s, stale)
-	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(65))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("stale window of fresh background app should minimize")
-	}
-	if hasWin(dec.MinimizeWindows, 1) {
-		t.Error("window 1 (55s) not expired yet")
-	}
-	if hasApp(dec.HideApps, "Google Chrome") {
-		t.Error("Chrome app (54s) not expired yet")
-	}
-
-	// t+80: Chrome app expired (69s) -> app tier hides it; w1 (70s, also
-	// expired) must NOT be minimized — the hide owns it.
-	remaining := []SnapWindow{win(10, 200, "Terminal"), win(1, 100, "Google Chrome")}
-	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, remaining), at(80))
+	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70))
 	if !hasApp(dec.HideApps, "Google Chrome") {
-		t.Error("Chrome should hide once the app timer expires")
+		t.Error("stale Chrome should hide after the timeout")
 	}
-	if hasWin(dec.MinimizeWindows, 1) {
-		t.Error("windows of an app being hidden must not also minimize")
+	if hasApp(dec.HideApps, "Terminal") {
+		t.Error("frontmost Terminal must never hide")
 	}
 }
 
-func TestDisabledAndExcludedAppsUntouched(t *testing.T) {
+// App-hiding must work with no focused window and AX untrusted — those gated
+// only the removed window tier, never hiding.
+func TestAppHidesWithoutFocusOrAX(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	noFocus := snap(terminalApp(), 0, apps, wins)
+	noFocus.AXTrusted = false
+	dec := tr.Update(cfg, noFocus, at(70))
+	if !hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("app tier should hide stale Chrome with no focus / AX untrusted")
+	}
+}
+
+func TestDisabledAndExcludedAppsNeverHide(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	apps := []SnapApp{terminalApp(), {Pid: 300, Name: "NoHide"}, {Pid: 400, Name: "Finder"}}
@@ -159,9 +119,6 @@ func TestDisabledAndExcludedAppsUntouched(t *testing.T) {
 	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(200))
 	if hasApp(dec.HideApps, "NoHide") || hasApp(dec.HideApps, "Finder") {
 		t.Errorf("disabled/excluded apps must not hide, got %+v", dec.HideApps)
-	}
-	if hasWin(dec.MinimizeWindows, 30) || hasWin(dec.MinimizeWindows, 40) {
-		t.Errorf("disabled/excluded app windows must not minimize, got %+v", dec.MinimizeWindows)
 	}
 }
 
@@ -180,9 +137,9 @@ func TestZeroWindowAppNeverHides(t *testing.T) {
 	}
 }
 
-// A window (re)appearing refreshes its own timer AND its app's timer, so
-// nothing just summoned or restored is insta-hidden.
-func TestAppearanceGrantsFreshLease(t *testing.T) {
+// A new window of a background app refreshes that app's timer, so an app the
+// user just opened a window in is not insta-hidden.
+func TestNewWindowGrantsAppFreshLease(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	apps := []SnapApp{chromeApp(), terminalApp()}
@@ -191,8 +148,8 @@ func TestAppearanceGrantsFreshLease(t *testing.T) {
 	tr.Update(cfg, snap(chromeApp(), 1, apps, base), at(0))
 	tr.Update(cfg, snap(terminalApp(), 10, apps, base), at(5))
 
-	// t+50: new Chrome window 3 appears while Chrome is background; Chrome's
-	// app timer refreshes (would otherwise expire at t+65).
+	// New Chrome window at t+50 refreshes Chrome's app timer (would otherwise
+	// expire at t+65).
 	withNew := append(base, win(3, 100, "Google Chrome"))
 	tr.Update(cfg, snap(terminalApp(), 10, apps, withNew), at(50))
 
@@ -200,16 +157,10 @@ func TestAppearanceGrantsFreshLease(t *testing.T) {
 	if hasApp(dec.HideApps, "Google Chrome") {
 		t.Error("new window at t+50 should have refreshed Chrome's app timer")
 	}
-	if hasWin(dec.MinimizeWindows, 3) {
-		t.Error("window 3 (30s old) must not minimize")
-	}
-	if !hasWin(dec.MinimizeWindows, 1) {
-		t.Error("window 1 (75s stale) should minimize")
-	}
 }
 
-// After we hide an app, it must not be re-decided while hidden; when the user
-// unhides it, its reappearing windows grant a fresh lease.
+// After an app hides it must not be re-decided while hidden; unhiding it
+// (windows reappear, app frontmost) grants a fresh lease.
 func TestUnhideDoesNotInstantlyRehide(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
@@ -219,9 +170,7 @@ func TestUnhideDoesNotInstantlyRehide(t *testing.T) {
 		win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome"),
 	}
 
-	tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(0))
-	tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(5))
-
+	tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(0))
 	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(70))
 	if !hasApp(dec.HideApps, "Google Chrome") {
 		t.Fatal("Chrome should hide at t+70")
@@ -237,262 +186,18 @@ func TestUnhideDoesNotInstantlyRehide(t *testing.T) {
 
 	// User unhides Chrome (cmd-tab): windows reappear, Chrome frontmost.
 	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(300))
-	if hasApp(dec.HideApps, "Google Chrome") || len(dec.MinimizeWindows) != 0 {
-		t.Errorf("restored windows must get a fresh timeout, got %+v", dec)
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Errorf("restored app must get a fresh timeout, got %+v", dec.HideApps)
 	}
 
-	// And the lease is a real timeout: sibling ages out only after a full
-	// minute from restore.
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(330))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("sibling restored at t+300 must not minimize at t+330")
+	// The lease is a real timeout: hidden again only a full minute after restore.
+	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(330))
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("Chrome restored at t+300 must not hide at t+330")
 	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, allWins), at(365))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("sibling should minimize a full timeout after restore")
-	}
-}
-
-// No focused window identified (or AX untrusted) -> never minimize; the app
-// tier still works.
-func TestNoMinimizeWhenFocusUnknown(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp(), terminalApp()}
-	wins := []SnapWindow{
-		win(10, 200, "Terminal"),
-		win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome"),
-	}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(5))
-
-	noFocus := snap(terminalApp(), 0, apps, wins)
-	dec := tr.Update(cfg, noFocus, at(70))
-	if len(dec.MinimizeWindows) != 0 {
-		t.Error("focused window unknown -> no minimizing")
-	}
+	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, allWins), at(365))
 	if !hasApp(dec.HideApps, "Google Chrome") {
-		t.Error("app tier should still hide stale Chrome")
-	}
-
-	tr2 := NewTracker()
-	tr2.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	untrusted := snap(chromeApp(), 1, apps, wins)
-	untrusted.AXTrusted = false
-	dec = tr2.Update(cfg, untrusted, at(70))
-	if len(dec.MinimizeWindows) != 0 {
-		t.Error("AX untrusted -> no minimizing")
-	}
-}
-
-// More expired windows than the per-tick cap: the oldest go first, the rest
-// stay candidates for the next tick.
-func TestMinimizeCapOldestFirst(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp(), terminalApp()}
-
-	wins := []SnapWindow{win(10, 200, "Terminal"), win(1, 100, "Google Chrome")}
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-
-	// Windows 2..6 appear at staggered times (2 oldest ... 6 newest).
-	for i := uint32(2); i <= 6; i++ {
-		wins = append(wins, win(i, 100, "Google Chrome"))
-		tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(int(i)))
-	}
-
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(120))
-	if len(dec.MinimizeWindows) != 3 {
-		t.Fatalf("cap is 3 per tick, got %d", len(dec.MinimizeWindows))
-	}
-	for _, want := range []uint32{2, 3, 4} {
-		if !hasWin(dec.MinimizeWindows, want) {
-			t.Errorf("oldest window %d should be in the first batch", want)
-		}
-	}
-
-	// Minimized ones leave the snapshot; the remainder follow next tick.
-	rest := []SnapWindow{
-		win(10, 200, "Terminal"), win(1, 100, "Google Chrome"),
-		win(5, 100, "Google Chrome"), win(6, 100, "Google Chrome"),
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, rest), at(125))
-	if !hasWin(dec.MinimizeWindows, 5) || !hasWin(dec.MinimizeWindows, 6) {
-		t.Errorf("remaining expired windows should minimize next tick, got %+v", dec.MinimizeWindows)
-	}
-}
-
-func TestDeferWindowBacksOff(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp()}
-	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	tr.DeferWindow(2, at(300))
-
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("deferred window must not minimize before the deadline")
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(301))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("deferred window becomes eligible after the deadline")
-	}
-}
-
-// A window absent from the snapshot is forgotten; if it returns it is new.
-func TestWindowPruneAndReappear(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp()}
-	both := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-	only1 := []SnapWindow{win(1, 100, "Google Chrome")}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(0))
-	tr.Update(cfg, snap(chromeApp(), 1, apps, only1), at(10))
-
-	if got := windowCount(tr.List(cfg), "Google Chrome"); got != 1 {
-		t.Errorf("pruned window still listed: count = %d", got)
-	}
-
-	// Window 2 returns at t+20: it must age from t+20, not t0.
-	tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(20))
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(70))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("reappeared window must age from reappearance")
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(85))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("reappeared window minimizes one timeout after reappearing")
-	}
-}
-
-func TestListReportsWindows(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp(), terminalApp()}
-	wins := []SnapWindow{
-		win(10, 200, "Terminal"),
-		{ID: 1, Pid: 100, App: "Google Chrome", Title: "Docs"},
-		{ID: 2, Pid: 100, App: "Google Chrome", Title: ""},
-	}
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-
-	infos := tr.List(cfg)
-	if windowCount(infos, "Google Chrome") != 2 || windowCount(infos, "Terminal") != 1 {
-		t.Errorf("unexpected window counts in %+v", infos)
-	}
-	for _, info := range infos {
-		if info.Name == "Google Chrome" {
-			titles := map[string]bool{}
-			for _, w := range info.Windows {
-				titles[w.Title] = true
-			}
-			if !titles["Docs"] {
-				t.Errorf("expected title Docs in %+v", info.Windows)
-			}
-		}
-	}
-}
-
-// The legacy path (fallback modes) keeps today's app-level semantics.
-func TestUpdateLegacy(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	visible := []string{"Terminal", "Slack", "NoHide"}
-
-	if toHide := tr.UpdateLegacy(cfg, "Terminal", visible, at(0)); len(toHide) != 0 {
-		t.Fatalf("first tick quiet, got %v", toHide)
-	}
-	toHide := tr.UpdateLegacy(cfg, "Terminal", visible, at(70))
-	if len(toHide) != 1 || toHide[0] != "Slack" {
-		t.Errorf("stale Slack should hide (NoHide disabled, Terminal frontmost), got %v", toHide)
-	}
-	// Hidden apps are not re-decided while not visible.
-	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "NoHide"}, at(140)); len(toHide) != 0 {
-		t.Errorf("nothing left to hide, got %v", toHide)
-	}
-}
-
-func windowCount(infos []AppInfo, name string) int {
-	for _, info := range infos {
-		if info.Name == name {
-			return len(info.Windows)
-		}
-	}
-	return -1
-}
-
-// While AX is untrusted, focus is unobservable and window timers can't
-// refresh — granting Accessibility mid-run must NOT minimize-storm windows
-// whose staleness is bookkeeping, not observed idleness.
-func TestAXGrantDoesNotBurstMinimize(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp()}
-	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-
-	untrusted := snap(chromeApp(), 0, apps, wins)
-	untrusted.AXTrusted = false
-	tr.Update(cfg, untrusted, at(0))
-	tr.Update(cfg, untrusted, at(300))
-
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(305))
-	if len(dec.MinimizeWindows) != 0 {
-		t.Fatalf("first trusted tick must not minimize, got %+v", dec.MinimizeWindows)
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(360))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("window must age from the grant (55s), not from t0")
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(370))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("window should minimize one full timeout after the grant")
-	}
-}
-
-func TestWindowTierUsesPerAppTimeout(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	cfg.Apps["Google Chrome"] = config.AppConfig{Timeout: config.Duration{Duration: 5 * time.Minute}}
-	apps := []SnapApp{chromeApp()}
-	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(120))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("2m idle must survive a 5m per-app timeout")
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(310))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("window should minimize after the per-app 5m timeout")
-	}
-}
-
-// ResetWindows (mode transitions, focus mode) wipes window state; windows
-// re-register on the next tick with a fresh lease.
-func TestResetWindowsGrantsFreshLease(t *testing.T) {
-	tr := NewTracker()
-	cfg := testCfg()
-	apps := []SnapApp{chromeApp()}
-	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	tr.ResetWindows()
-	if got := windowCount(tr.List(cfg), "Google Chrome"); got != 0 {
-		t.Fatalf("windows should be cleared, count = %d", got)
-	}
-
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(100))
-	if hasWin(dec.MinimizeWindows, 2) {
-		t.Error("re-registered window must age from re-registration")
-	}
-	dec = tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(135))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("re-registered window minimizes a full timeout later")
+		t.Error("Chrome should hide a full timeout after restore")
 	}
 }
 
@@ -532,22 +237,133 @@ func TestHideRetryBackoff(t *testing.T) {
 	}
 }
 
-// Focusing a deferred window clears its backoff: the defer protected a
-// failing minimize, but a user touch starts a fresh cycle.
-func TestDeferClearedOnFocus(t *testing.T) {
+// --- Window tracking (drives `autohide list`) ---
+
+func TestListReportsWindows(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{
+		win(10, 200, "Terminal"),
+		{ID: 1, Pid: 100, App: "Google Chrome", Title: "Docs"},
+		{ID: 2, Pid: 100, App: "Google Chrome", Title: ""},
+	}
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
+
+	infos := tr.List(cfg)
+	if windowCount(infos, "Google Chrome") != 2 || windowCount(infos, "Terminal") != 1 {
+		t.Errorf("unexpected window counts in %+v", infos)
+	}
+	for _, info := range infos {
+		if info.Name == "Google Chrome" {
+			titles := map[string]bool{}
+			for _, w := range info.Windows {
+				titles[w.Title] = true
+			}
+			if !titles["Docs"] {
+				t.Errorf("expected title Docs in %+v", info.Windows)
+			}
+		}
+	}
+}
+
+// A window absent from the snapshot is forgotten; if it returns it re-leases
+// from the reappearance, not its original time.
+func TestWindowPruneAndReappear(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	both := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+	only1 := []SnapWindow{win(1, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(0))
+	tr.Update(cfg, snap(chromeApp(), 1, apps, only1), at(10))
+	if got := windowCount(tr.List(cfg), "Google Chrome"); got != 1 {
+		t.Errorf("pruned window still listed: count = %d", got)
+	}
+
+	// Window 2 returns at t+20: its timer leases from t+20.
+	tr.Update(cfg, snap(chromeApp(), 1, apps, both), at(20))
+	la, ok := windowLastActive(tr.List(cfg), 2)
+	if !ok || !la.Equal(at(20)) {
+		t.Errorf("reappeared window should re-lease at t+20, got %v (ok=%v)", la, ok)
+	}
+}
+
+// The focused window's timer refreshes each tick it holds focus; siblings age.
+func TestFocusedWindowRefreshes(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	apps := []SnapApp{chromeApp()}
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
 
 	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
-	tr.DeferWindow(2, at(300))
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(50)) // window 1 stays focused
 
-	tr.Update(cfg, snap(chromeApp(), 2, apps, wins), at(100)) // user clicks w2
-	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(105))
+	if la, _ := windowLastActive(tr.List(cfg), 1); !la.Equal(at(50)) {
+		t.Errorf("focused window 1 should refresh to t+50, got %v", la)
+	}
+	if la, _ := windowLastActive(tr.List(cfg), 2); !la.Equal(at(0)) {
+		t.Errorf("unfocused window 2 should stay at t0, got %v", la)
+	}
+}
 
-	dec := tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(170))
-	if !hasWin(dec.MinimizeWindows, 2) {
-		t.Error("focus must clear the defer; w2 is 70s idle and should minimize")
+// Granting Accessibility mid-run re-leases every window so `list` doesn't
+// suddenly show them all as long idle (focus was unobservable while untrusted).
+func TestAXGrantReleasesWindowTimers(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	untrusted := snap(chromeApp(), 0, apps, wins)
+	untrusted.AXTrusted = false
+	tr.Update(cfg, untrusted, at(0))
+	tr.Update(cfg, untrusted, at(300))
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(305)) // AX granted
+	if la, _ := windowLastActive(tr.List(cfg), 2); !la.Equal(at(305)) {
+		t.Errorf("window 2 should re-lease at the grant (t+305), got %v", la)
+	}
+}
+
+// ResetWindows (mode transitions, focus mode) wipes window state; windows
+// re-register on the next tick with a fresh lease.
+func TestResetWindowsGrantsFreshLease(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(0))
+	tr.ResetWindows()
+	if got := windowCount(tr.List(cfg), "Google Chrome"); got != 0 {
+		t.Fatalf("windows should be cleared, count = %d", got)
+	}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
+	if la, ok := windowLastActive(tr.List(cfg), 2); !ok || !la.Equal(at(70)) {
+		t.Errorf("re-registered window should lease at t+70, got %v (ok=%v)", la, ok)
+	}
+}
+
+// --- Legacy fallback ---
+
+// The legacy path (fallback modes) keeps today's app-level semantics.
+func TestUpdateLegacy(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	visible := []string{"Terminal", "Slack", "NoHide"}
+
+	if toHide := tr.UpdateLegacy(cfg, "Terminal", visible, at(0)); len(toHide) != 0 {
+		t.Fatalf("first tick quiet, got %v", toHide)
+	}
+	toHide := tr.UpdateLegacy(cfg, "Terminal", visible, at(70))
+	if len(toHide) != 1 || toHide[0] != "Slack" {
+		t.Errorf("stale Slack should hide (NoHide disabled, Terminal frontmost), got %v", toHide)
+	}
+	// Hidden apps are not re-decided while not visible.
+	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "NoHide"}, at(140)); len(toHide) != 0 {
+		t.Errorf("nothing left to hide, got %v", toHide)
 	}
 }
