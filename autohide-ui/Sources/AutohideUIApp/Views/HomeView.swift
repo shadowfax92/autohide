@@ -149,9 +149,9 @@ struct HomePane: View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "How it works")
-                howRow(number: "1", text: "Use your apps normally — autohide watches which windows are active.")
-                howRow(number: "2", text: "Apps you stop using are hidden after the timeout; stale windows minimize to the Dock.")
-                howRow(number: "3", text: "Switch back (or un-minimize) and the timer starts fresh.")
+                howRow(number: "1", text: "Use your apps normally — autohide watches which apps are active.")
+                howRow(number: "2", text: "Apps you stop using are hidden after the timeout.")
+                howRow(number: "3", text: "Switch back and the timer starts fresh.")
             }
         }
     }

@@ -13,7 +13,6 @@ import (
 
 const (
 	maxHelperFails      = 3
-	minimizeBackoff     = 5 * time.Minute
 	helperRetryCooldown = 5 * time.Minute
 )
 
@@ -268,7 +267,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 	if focusMode {
 		// Window timers can't be maintained while focus mode owns the
 		// screen; drop them so leaving focus mode re-leases instead of
-		// minimize-bursting.
+		// showing every window as long idle.
 		d.tracker.ResetWindows()
 		// Focus mode: hide everything except frontmost immediately
 		for _, app := range snap.Apps {
@@ -291,15 +290,6 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.logger.Info().Str("app", app.Name).Msg("hiding inactive app")
 		if err := d.helper.Hide(app.Pid); err != nil {
 			d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
-		}
-	}
-	for _, w := range dec.MinimizeWindows {
-		d.logger.Info().Str("app", w.App).Uint32("window", w.ID).Str("title", w.Title).
-			Msg("minimizing inactive window")
-		if err := d.helper.Minimize(w.Pid, w.ID); err != nil {
-			d.logger.Warn().Err(err).Str("app", w.App).Uint32("window", w.ID).
-				Msg("minimize failed; backing off")
-			d.tracker.DeferWindow(w.ID, now.Add(minimizeBackoff))
 		}
 	}
 	return true

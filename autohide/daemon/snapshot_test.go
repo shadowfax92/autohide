@@ -138,13 +138,13 @@ func TestHelperTimeoutKillsProcess(t *testing.T) {
 
 func TestHelperFailurePropagatesStderr(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFakeHelper(t, dir, "#!/bin/sh\necho 'window not found' >&2\nexit 1\n")
+	path := writeFakeHelper(t, dir, "#!/bin/sh\necho 'boom' >&2\nexit 1\n")
 
-	err := NewHelper(path).Minimize(100, 42)
+	_, err := NewHelper(path).Snapshot()
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "window not found") {
+	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("error %q should carry stderr detail", err)
 	}
 }

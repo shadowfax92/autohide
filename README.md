@@ -1,15 +1,10 @@
 # 🫥 autohide
 
-A macOS CLI that automatically hides app windows you're not using.
+A macOS CLI that automatically hides apps you're not using.
 
 Switch to Chrome, and after 60 seconds Slack, Spotify, and everything else quietly disappear. Switch back and they're right where you left them. Your desktop stays clean without you thinking about it.
 
-It works per **window**, not just per app: keep working in one Chrome window and the stale Chrome windows next to it minimize on the same timeout — even while the rest of Chrome stays put. Two tiers:
-
-- **Apps** you stop using entirely are hidden whole (Cmd-Tab brings everything back at once).
-- **Windows** you stop using inside an app you're still using are minimized to the Dock individually.
-
-Anything you summon back — un-hide, un-minimize, switch a Space in — gets a fresh timeout before it's touched again.
+Apps you stop using are hidden whole — Cmd-Tab brings everything back at once. Anything you summon back — un-hide, switch a Space in — gets a fresh timeout before it's hidden again.
 
 ## Install
 
@@ -88,7 +83,7 @@ Config lives at `~/.config/autohide/config.toml` and is created with defaults on
 
 ```toml
 [general]
-default_timeout = "1m"       # hide apps / minimize windows after this long
+default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
 system_exclude = ["Finder"]  # never hide these
 window_tracking = true       # false = legacy app-level behavior only
@@ -113,14 +108,13 @@ autohide (CLI)      ── unix socket ──▶  autohide daemon (background)
 autohide-ui (window) ── unix socket ──▶       │
                                          ├── polls autohide-helper snapshot every 5s
                                          │     (apps + on-screen windows + focused window)
-                                         ├── hides apps that exceed their timeout
-                                         └── minimizes stale windows of apps still in use
+                                         └── hides apps that exceed their timeout
 ```
 
-- **Native snapshot.** `autohide-helper` (Swift) reads windows via CGWindowList in milliseconds and addresses them by stable window ID — no per-window AppleScript loops, no title/index matching.
-- **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide, window minimizing waits for the grant. `autohide status` shows which mode you're in.
-- **Per-app config governs both tiers.** An app's `timeout`/`disabled` applies to hiding it and to minimizing its windows.
-- **Permissions:** **Accessibility** (System Settings > Privacy & Security) for the helper to read the focused window and minimize windows — grant it from the window (`autohide ui` → Settings) or System Settings. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
+- **Native snapshot.** `autohide-helper` (Swift) reads apps and on-screen windows via CGWindowList in milliseconds — no per-window AppleScript loops. The daemon hides whole apps; windows are tracked only to populate `autohide list`.
+- **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide; the per-window info in `list` waits for the grant. `autohide status` shows which mode you're in.
+- **Per-app config.** An app's `timeout`/`disabled` governs whether and when it's hidden.
+- **Permissions:** **Accessibility** (System Settings > Privacy & Security) lets the helper read the focused window (shown in `list`) — grant it from the window (`autohide ui` → Settings) or System Settings. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
 - **After reinstalling/rebuilding**, macOS may invalidate the Accessibility grant (ad-hoc code signature). If `autohide status` shows `app-only: accessibility not granted`, toggle the grant off and on again in System Settings.
 - The daemon runs via `launchd` and restarts automatically.
 
@@ -146,9 +140,9 @@ mac-auto-hide/
 ├── autohide/                # Go CLI + daemon
 │   ├── cmd/                 # cobra commands
 │   ├── config/              # TOML config
-│   ├── daemon/              # poll loop, two-tier tracker, IPC server
+│   ├── daemon/              # poll loop, app tracker, IPC server
 │   └── ipc/                 # unix socket protocol + client
-├── autohide-helper/         # Swift window snapshot/minimize/hide helper
+├── autohide-helper/         # Swift app snapshot + hide helper
 │   ├── Package.swift
 │   └── Sources/
 └── autohide-ui/             # Swift status/permissions window (SwiftUI)

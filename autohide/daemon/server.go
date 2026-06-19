@@ -292,15 +292,10 @@ func (s *Server) handleList(req ipc.Request) ipc.Response {
 		}
 		if withWindows {
 			for _, w := range a.Windows {
-				wRemaining := a.Timeout - now.Sub(w.LastActive)
-				if wRemaining < 0 || a.Disabled {
-					wRemaining = 0
-				}
 				info.Windows = append(info.Windows, ipc.WindowInfo{
-					ID:            w.ID,
-					Title:         w.Title,
-					LastActive:    w.LastActive.Format(time.RFC3339),
-					TimeRemaining: wRemaining.Round(time.Second).String(),
+					ID:         w.ID,
+					Title:      w.Title,
+					LastActive: w.LastActive.Format(time.RFC3339),
 				})
 			}
 		}

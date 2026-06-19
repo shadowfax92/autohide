@@ -83,9 +83,6 @@ private struct AppRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
-                            Text(prettyGoDuration(window.timeRemaining))
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.tertiary)
                         }
                     }
                 }

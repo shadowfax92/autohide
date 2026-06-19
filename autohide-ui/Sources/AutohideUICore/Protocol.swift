@@ -21,7 +21,6 @@ public struct WindowInfo: Decodable, Equatable {
     public let id: UInt32
     public let title: String?
     public let lastActive: String
-    public let timeRemaining: String
 }
 
 public struct AppInfo: Decodable, Equatable {

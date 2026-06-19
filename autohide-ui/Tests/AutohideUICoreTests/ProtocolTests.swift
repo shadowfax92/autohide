@@ -41,8 +41,8 @@ final class ProtocolTests: XCTestCase {
               {"name": "Slack", "last_active": "2026-06-12T12:00:00-07:00", "timeout": "1m0s",
                "hidden": false, "time_remaining": "42s", "disabled": false, "window_count": 2,
                "windows": [
-                 {"id": 9, "title": "general", "last_active": "2026-06-12T12:00:00-07:00", "time_remaining": "42s"},
-                 {"id": 10, "last_active": "2026-06-12T12:00:00-07:00", "time_remaining": "0s"}
+                 {"id": 9, "title": "general", "last_active": "2026-06-12T12:00:00-07:00"},
+                 {"id": 10, "last_active": "2026-06-12T12:00:00-07:00"}
                ]},
               {"name": "Finder", "last_active": "2026-06-12T12:00:00-07:00", "timeout": "0s",
                "hidden": false, "time_remaining": "0s", "disabled": true, "window_count": 0}

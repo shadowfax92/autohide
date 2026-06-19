@@ -36,7 +36,7 @@ struct SettingsPane: View {
                 SectionLabel(text: "Permissions")
                 PermissionRow(
                     title: "Accessibility",
-                    detail: "Required — lets autohide read the focused window and minimize stale ones.",
+                    detail: "Required — lets autohide read the focused window for the apps list.",
                     symbol: "accessibility",
                     state: model.accessibility,
                     buttonTitle: model.accessibility == .granted ? "Settings" : "Grant",

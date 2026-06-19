@@ -50,16 +50,8 @@ type Snapshot struct {
 	Windows         []SnapWindow `json:"windows"`
 }
 
-type WindowRef struct {
-	ID    uint32
-	Pid   int32
-	App   string
-	Title string
-}
-
 type Decisions struct {
-	HideApps        []AppRef
-	MinimizeWindows []WindowRef
+	HideApps []AppRef
 }
 
 // Helper invokes the one-shot autohide-helper binary; every call is a fresh
@@ -139,11 +131,6 @@ func (h *Helper) Snapshot() (*Snapshot, error) {
 		return nil, err
 	}
 	return parseSnapshot(out)
-}
-
-func (h *Helper) Minimize(pid int32, windowID uint32) error {
-	_, err := h.run("minimize", strconv.Itoa(int(pid)), strconv.FormatUint(uint64(windowID), 10))
-	return err
 }
 
 func (h *Helper) Hide(pid int32) error {

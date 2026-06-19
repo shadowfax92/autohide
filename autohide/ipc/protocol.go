@@ -27,10 +27,9 @@ type StatusData struct {
 }
 
 type WindowInfo struct {
-	ID            uint32 `json:"id"`
-	Title         string `json:"title,omitempty"`
-	LastActive    string `json:"last_active"`
-	TimeRemaining string `json:"time_remaining"`
+	ID         uint32 `json:"id"`
+	Title      string `json:"title,omitempty"`
+	LastActive string `json:"last_active"`
 }
 
 type AppInfo struct {
