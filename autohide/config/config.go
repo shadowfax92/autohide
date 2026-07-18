@@ -27,6 +27,9 @@ func (d Duration) MarshalText() ([]byte, error) {
 // the way the menu bar and status surfaces display them; hours fall back to
 // Go's verbose form.
 func FormatDuration(d time.Duration) string {
+	if d > 0 && d < time.Second {
+		return d.String()
+	}
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
