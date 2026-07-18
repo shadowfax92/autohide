@@ -12,7 +12,7 @@ import (
 
 var hideCmd = &cobra.Command{
 	Use:   "hide",
-	Short: "Hide windows immediately",
+	Short: "Hide apps immediately",
 }
 
 var hideAllCmd = &cobra.Command{

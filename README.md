@@ -4,11 +4,13 @@ A macOS CLI that automatically hides apps you're not using.
 
 Switch to Chrome, and after 60 seconds Slack, Spotify, and everything else quietly disappear. Switch back and they're right where you left them. Your desktop stays clean without you thinking about it.
 
-Apps you stop using are hidden whole — Cmd-Tab brings everything back at once. Anything you summon back — un-hide, switch a Space in — gets a fresh timeout before it's hidden again.
+Apps you stop using are hidden whole, with the same semantics as Cmd-H — Cmd-Tab brings the app and all of its windows back at once. Anything you summon back — un-hide, switch a Space in — gets a fresh timeout before it's hidden again.
+
+autohide never minimizes windows. macOS has no public API for hiding one window of another app while leaving its other windows visible; the alternatives are minimizing or unsupported private WindowServer APIs that require weakening SIP. Windows are tracked only for activity timers and list display. The hide action is always app-level.
 
 ## Install
 
-Requires Go 1.24+ and Swift 5.9+ (for the window helper). No sudo needed (admin account — `/Applications` is admin-writable).
+Requires Go 1.24+ and Swift 5.9+ (for the native helper). No sudo needed (admin account — `/Applications` is admin-writable).
 
 ```bash
 git clone https://github.com/your-user/mac-auto-hide.git
@@ -16,7 +18,7 @@ cd mac-auto-hide
 make install
 ```
 
-This builds everything, installs `/Applications/autohide.app` (menu-bar app + daemon + window helper), starts it via launchd, and symlinks the `autohide` CLI into `$(go env GOPATH)/bin`.
+This builds everything, installs `/Applications/autohide.app` (menu-bar app + daemon + native helper), starts it via launchd, and symlinks the `autohide` CLI into `$(go env GOPATH)/bin`.
 
 ## Quick start
 
@@ -41,7 +43,7 @@ autohide status
 ### The window
 
 A clean light-theme control panel for everything below — live status, the
-tracked-apps list with per-window countdowns, pause/focus/timeout controls,
+tracked-apps list with window activity detail, pause/focus/timeout controls,
 and one-click **Accessibility** granting (it fires the system prompt and
 deep-links System Settings).
 
@@ -53,7 +55,7 @@ autohide ui      # or: menu bar 🫥 → "Open autohide…"
 
 ```bash
 autohide status                # check daemon state (+ window-tracking mode)
-autohide list                  # see tracked apps + time-to-hide + window counts
+autohide list                  # see tracked apps, hide status/reasons, and window counts
 autohide list --windows        # expand per-window rows under each app
 autohide hide all              # immediately hide all eligible background apps
 autohide pause                 # stop hiding (presenting, screen sharing)
@@ -86,7 +88,7 @@ Config lives at `~/.config/autohide/config.toml` and is created with defaults on
 default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
 system_exclude = ["Finder"]  # never hide these
-window_tracking = true       # false = legacy app-level behavior only
+window_tracking = true       # track window activity/list detail; hiding stays app-level
 
 [apps]
   [apps.Finder]
@@ -111,10 +113,12 @@ autohide-ui (window) ── unix socket ──▶       │
                                          └── hides apps that exceed their timeout
 ```
 
-- **Native snapshot.** `autohide-helper` (Swift) reads apps and on-screen windows via CGWindowList in milliseconds — no per-window AppleScript loops. The daemon hides whole apps; windows are tracked only to populate `autohide list`.
-- **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide; the per-window info in `list` waits for the grant. `autohide status` shows which mode you're in.
+- **App-level hiding.** Every hide is equivalent to Cmd-H: all windows belonging to the app hide and restore together. Individual windows are never minimized, masked, or moved.
+- **Native snapshot.** `autohide-helper` (Swift) reads apps and on-screen windows via CGWindowList in milliseconds. Window observations drive activity timers and `autohide list`; they are not independently hidden.
+- **Fullscreen handling.** Apps whose visible windows are all fullscreen or in Split View are shown as `unhidable: fullscreen` and skipped until they leave that Space.
+- **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide through AppKit, while focused-window and Split View detection are limited. `autohide status` shows which mode you're in.
 - **Per-app config.** An app's `timeout`/`disabled` governs whether and when it's hidden.
-- **Permissions:** **Accessibility** (System Settings > Privacy & Security) lets the helper read the focused window (shown in `list`) — grant it from the window (`autohide ui` → Settings) or System Settings. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
+- **Permissions:** **Accessibility** (System Settings > Privacy & Security) enables the synchronous app-hide path plus focused/fullscreen window detection — grant it from the window (`autohide ui` → Settings) or System Settings. Hiding still falls back to AppKit without it. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
 - **After reinstalling/rebuilding**, macOS may invalidate the Accessibility grant (ad-hoc code signature). If `autohide status` shows `app-only: accessibility not granted`, toggle the grant off and on again in System Settings.
 - The daemon runs via `launchd` and restarts automatically.
 

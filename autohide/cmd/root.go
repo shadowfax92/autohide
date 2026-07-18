@@ -29,8 +29,8 @@ var runDaemonFn = runDaemon
 
 var rootCmd = &cobra.Command{
 	Use:   "autohide",
-	Short: "Auto-hide inactive macOS application windows",
-	Long:  "A CLI daemon that automatically hides macOS app windows after a period of inactivity.",
+	Short: "Auto-hide inactive macOS apps",
+	Long:  "A CLI daemon that hides inactive macOS apps with Cmd-H semantics.",
 	// Operational errors (e.g. socket takeover failure under launchd KeepAlive)
 	// must not dump a usage screen into daemon.log on every restart.
 	SilenceUsage: true,

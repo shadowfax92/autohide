@@ -40,7 +40,7 @@ final class DisplayStateTests: XCTestCase {
 
     func testTrackingDisplayMapping() {
         XCTAssertEqual(trackingDisplay("active").severity, .ok)
-        XCTAssertEqual(trackingDisplay("active").label, "Per-window")
+        XCTAssertEqual(trackingDisplay("active").label, "App-level — window-aware")
 
         let appOnly = trackingDisplay("app-only: accessibility not granted")
         XCTAssertEqual(appOnly.severity, .warn)
