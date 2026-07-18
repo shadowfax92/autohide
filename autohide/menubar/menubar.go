@@ -17,9 +17,17 @@ const BundleID = "com.autohide.daemon"
 
 var dm *daemon.Daemon
 
-func Run(d *daemon.Daemon) {
+// Run owns the startup OS thread and links AppKit termination to daemon shutdown.
+func Run(d *daemon.Daemon, shutdown func()) {
 	dm = d
 	app := menuet.App()
+	wg, shutdownCtx := app.GracefulShutdownHandles()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-shutdownCtx.Done()
+		shutdown()
+	}()
 	app.SetMenuState(&menuet.MenuState{Title: menuTitle()})
 	app.Children = menuItems
 	app.Label = BundleID
@@ -116,15 +124,6 @@ func menuItems() []menuet.MenuItem {
 	items = append(items, menuet.MenuItem{
 		Text:     timeoutSubmenuTitle(cfg),
 		Children: func() []menuet.MenuItem { return timeoutItems(cfg) },
-	})
-
-	items = append(items, menuet.MenuItem{Type: menuet.Separator})
-
-	items = append(items, menuet.MenuItem{
-		Text: "Quit",
-		Clicked: func() {
-			os.Exit(0)
-		},
 	})
 
 	return items

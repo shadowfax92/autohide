@@ -85,16 +85,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return d.Run(ctx)
 	}
 
+	daemonDone := make(chan struct{})
 	go func() {
 		if err := d.Run(ctx); err != nil {
 			logger.Error().Err(err).Msg("daemon error")
 		}
+		close(daemonDone)
 		// menuet's RunApplication never returns, so exit here — but release
 		// the socket first since os.Exit skips the deferred Stop.
 		srv.Stop()
 		os.Exit(0)
 	}()
 
-	menubar.Run(d)
+	menubar.Run(d, func() {
+		cancel()
+		<-daemonDone
+	})
 	return nil
 }

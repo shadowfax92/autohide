@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func TestFocusDecisionsKeepsRecentWorkingSet(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 3
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	chrome := chromeApp()
 	terminal := terminalApp()
 	slack := SnapApp{Pid: 300, Name: "Slack"}
@@ -133,7 +134,7 @@ func TestFocusDecisionsWaitsPastGraceBoundary(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 1
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	apps := []SnapApp{chromeApp(), terminalApp()}
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 
@@ -150,7 +151,7 @@ func TestFocusDecisionsSkipsIneligibleApps(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 1
-	cfg.Focus.Grace = config.Duration{time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: time.Second}
 	hidden := SnapApp{Pid: 300, Name: "Hidden", Hidden: true}
 	noHide := SnapApp{Pid: 400, Name: "NoHide"}
 	windowless := SnapApp{Pid: 500, Name: "Windowless"}
@@ -174,7 +175,7 @@ func TestFocusDecisionsColdEntryDoesNotHideApps(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 3
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
 	wins := []SnapWindow{
 		win(1, 100, "Google Chrome"),
@@ -536,5 +537,37 @@ func TestUpdateLegacy(t *testing.T) {
 	// Hidden apps are not re-decided while not visible.
 	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "NoHide"}, at(140)); len(toHide) != 0 {
 		t.Errorf("nothing left to hide, got %v", toHide)
+	}
+}
+
+func TestUpdateLegacyIgnoresMissingFrontmost(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+
+	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "Slack"}, at(0)); len(toHide) != 0 {
+		t.Fatalf("first tick quiet, got %v", toHide)
+	}
+	toHide := tr.UpdateLegacy(cfg, "missing value", []string{"Slack", "missing value", ""}, at(70))
+	if len(toHide) != 1 || toHide[0] != "Slack" {
+		t.Fatalf("missing frontmost should not refresh or hide itself, got %v", toHide)
+	}
+
+	for _, app := range tr.List(cfg) {
+		if app.Name == "" || strings.EqualFold(app.Name, "missing value") {
+			t.Fatalf("invalid legacy app was tracked: %q", app.Name)
+		}
+	}
+}
+
+func TestUpdateLegacyEmptyFrontmostDoesNotRefresh(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+
+	tr.UpdateLegacy(cfg, "Slack", []string{"Slack"}, at(0))
+	tr.UpdateLegacy(cfg, "", []string{"Slack"}, at(30))
+
+	apps := tr.List(cfg)
+	if len(apps) != 1 || apps[0].Name != "Slack" || !apps[0].LastActive.Equal(at(0)) {
+		t.Fatalf("empty frontmost refreshed tracker: %+v", apps)
 	}
 }

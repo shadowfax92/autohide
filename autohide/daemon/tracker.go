@@ -47,6 +47,7 @@ type Tracker struct {
 	mu            sync.RWMutex
 	apps          map[string]*AppState
 	windows       map[uint32]*WindowState
+	restoredApps  map[string]int32
 	recent        []string
 	axTrustedPrev bool
 }
@@ -110,6 +111,9 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 
 	t.observeAppsLocked(snap, appeared, now)
+	// Window state is intentionally ephemeral; the first snapshot must not
+	// mistake every restored app's existing windows for a real reappearance.
+	t.restoredApps = nil
 
 	var dec Decisions
 
@@ -211,6 +215,13 @@ func (t *Tracker) observeAppsLocked(snap *Snapshot, appeared map[string]bool, no
 			entry = &AppState{LastActive: now}
 			t.apps[a.Name] = entry
 		}
+		restoredPID, restored := t.restoredApps[a.Name]
+		// Legacy state has no PID, so only a known mismatch proves a relaunch.
+		if restored && restoredPID != 0 && a.Pid != 0 && restoredPID != a.Pid {
+			entry.LastActive = now
+			entry.DeferUntil = time.Time{}
+			delete(t.restoredApps, a.Name)
+		}
 		entry.Pid = a.Pid
 		entry.Unhidable = ""
 		if a.Unhidable != nil {
@@ -234,7 +245,9 @@ func (t *Tracker) observeAppsLocked(snap *Snapshot, appeared map[string]bool, no
 	t.recent = pruned
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
-			entry.LastActive = now
+			if _, restored := t.restoredApps[name]; !restored {
+				entry.LastActive = now
+			}
 		}
 	}
 	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
@@ -292,23 +305,33 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if state, ok := t.apps[frontmost]; ok {
-		state.LastActive = now
-		state.Hidden = false
-	} else {
-		t.apps[frontmost] = &AppState{LastActive: now}
+	frontmost = normalizeLegacyAppName(frontmost)
+	if frontmost != "" {
+		if state, ok := t.apps[frontmost]; ok {
+			state.LastActive = now
+			state.Hidden = false
+		} else {
+			t.apps[frontmost] = &AppState{LastActive: now}
+		}
 	}
 	t.recordFrontmostLocked(frontmost)
 
-	for _, name := range visible {
+	visibleSet := make(map[string]bool, len(visible))
+	for _, rawName := range visible {
+		name := normalizeLegacyAppName(rawName)
+		if name == "" {
+			continue
+		}
+		visibleSet[name] = true
 		if _, ok := t.apps[name]; !ok {
 			t.apps[name] = &AppState{LastActive: now}
 		}
 	}
 
-	visibleSet := make(map[string]bool, len(visible))
-	for _, v := range visible {
-		visibleSet[v] = true
+	for name := range t.apps {
+		if normalizeLegacyAppName(name) == "" {
+			delete(t.apps, name)
+		}
 	}
 
 	var toHide []string
