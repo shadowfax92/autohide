@@ -54,6 +54,55 @@ func TestSaveLoadRoundtripsWindowTracking(t *testing.T) {
 	}
 }
 
+func TestDefaultFocusSettings(t *testing.T) {
+	cfg := Default()
+	if cfg.Focus.KeepRecent != 3 {
+		t.Errorf("keep_recent = %d, want 3", cfg.Focus.KeepRecent)
+	}
+	if cfg.Focus.Grace.Duration != 10*time.Second {
+		t.Errorf("grace = %v, want 10s", cfg.Focus.Grace.Duration)
+	}
+}
+
+func TestLoadFocusSettings(t *testing.T) {
+	path := writeConfig(t, "[focus]\nkeep_recent = 5\ngrace = \"30s\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Focus.KeepRecent != 5 {
+		t.Errorf("keep_recent = %d, want 5", cfg.Focus.KeepRecent)
+	}
+	if cfg.Focus.Grace.Duration != 30*time.Second {
+		t.Errorf("grace = %v, want 30s", cfg.Focus.Grace.Duration)
+	}
+}
+
+func TestLoadFocusSettingsKeepsDefaultsWhenSectionMissing(t *testing.T) {
+	path := writeConfig(t, "[general]\ndefault_timeout = \"2m\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Focus.KeepRecent != 3 || cfg.Focus.Grace.Duration != 10*time.Second {
+		t.Errorf("focus = %+v, want default settings", cfg.Focus)
+	}
+}
+
+func TestLoadNormalizesFocusLowerBounds(t *testing.T) {
+	path := writeConfig(t, "[focus]\nkeep_recent = 0\ngrace = \"-5s\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Focus.KeepRecent != 1 {
+		t.Errorf("keep_recent = %d, want lower bound 1", cfg.Focus.KeepRecent)
+	}
+	if cfg.Focus.Grace.Duration != 0 {
+		t.Errorf("grace = %v, want lower bound 0", cfg.Focus.Grace.Duration)
+	}
+}
+
 func TestEffectiveTimeout(t *testing.T) {
 	cfg := Default()
 	cfg.General.DefaultTimeout = Duration{1 * time.Minute}
@@ -93,6 +142,8 @@ func TestFormatDuration(t *testing.T) {
 		in   time.Duration
 		want string
 	}{
+		{0, "0s"},
+		{500 * time.Millisecond, "500ms"},
 		{30 * time.Second, "30s"},
 		{time.Minute, "1m"},
 		{2 * time.Minute, "2m"},

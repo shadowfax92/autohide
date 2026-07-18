@@ -125,7 +125,7 @@ struct HomePane: View {
                 Divider().overlay(Theme.Palette.separator)
                 FieldRow(
                     title: "Focus Mode",
-                    help: "Immediately hide everything except the app you're using."
+                    help: "Keep your recent working set visible while other apps hide after a short grace."
                 ) {
                     Toggle("", isOn: focusBinding)
                         .toggleStyle(.switch)

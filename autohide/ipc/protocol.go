@@ -12,13 +12,14 @@ type Response struct {
 }
 
 type StatusData struct {
-	Running        bool   `json:"running"`
-	Paused         bool   `json:"paused"`
-	FocusMode      bool   `json:"focus_mode"`
-	Uptime         string `json:"uptime"`
-	TrackedCount   int    `json:"tracked_count"`
-	ResumeAt       string `json:"resume_at,omitempty"`
-	WindowTracking string `json:"window_tracking,omitempty"`
+	Running         bool   `json:"running"`
+	Paused          bool   `json:"paused"`
+	FocusMode       bool   `json:"focus_mode"`
+	FocusKeepRecent int    `json:"focus_keep_recent,omitempty"`
+	Uptime          string `json:"uptime"`
+	TrackedCount    int    `json:"tracked_count"`
+	ResumeAt        string `json:"resume_at,omitempty"`
+	WindowTracking  string `json:"window_tracking,omitempty"`
 	// Permission state is nil until the daemon's first native tick observes it.
 	AXTrusted       *bool    `json:"ax_trusted,omitempty"`
 	ScreenRecording *bool    `json:"screen_recording,omitempty"`
@@ -57,7 +58,10 @@ type AXPromptData struct {
 }
 
 type FocusModeData struct {
-	Active bool `json:"active"`
+	Active     bool     `json:"active"`
+	KeepRecent int      `json:"keep_recent"`
+	Grace      string   `json:"grace"`
+	KeepSet    []string `json:"keep_set"`
 }
 
 type HideAllData struct {
