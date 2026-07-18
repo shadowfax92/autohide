@@ -39,12 +39,12 @@ type SnapWindow struct {
 }
 
 // Snapshot is the autohide-helper view of one poll tick: regular running
-// apps, on-screen windows of the current Space, and what has focus.
-// ScreenRecording is a pointer for the same reason as CheckResult's: old
-// helper builds omit it, and absent must stay "unknown", not "denied".
+// apps, on-screen windows of the current Space, focus, and user idle time.
+// Optional pointer fields preserve "unknown" when old helper builds omit them.
 type Snapshot struct {
 	AXTrusted       bool         `json:"ax_trusted"`
 	ScreenRecording *bool        `json:"screen_recording"`
+	IdleSeconds     *float64     `json:"idle_seconds"`
 	Frontmost       AppRef       `json:"frontmost"`
 	FocusedWindowID uint32       `json:"focused_window_id"`
 	Apps            []SnapApp    `json:"apps"`

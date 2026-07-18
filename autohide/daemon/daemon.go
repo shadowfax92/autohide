@@ -23,6 +23,7 @@ type Daemon struct {
 	logger  zerolog.Logger
 
 	actionMu      sync.Mutex
+	lastTick      time.Time
 	helper        *Helper
 	helperFails   int
 	helperRetryAt time.Time
@@ -187,15 +188,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) tick() {
+	d.tickAt(time.Now())
+}
+
+func (d *Daemon) tickAt(now time.Time) {
 	d.actionMu.Lock()
 	defer d.actionMu.Unlock()
 
 	d.mu.RLock()
 	paused := d.paused
 	resumeAt := d.resumeAt
+	interval := d.cfg.General.CheckInterval.Duration
 	d.mu.RUnlock()
+	tickDelta, agingFrozen := d.beginAgingTick(now, interval)
 
-	if paused && resumeAt != nil && time.Now().After(*resumeAt) {
+	if paused && resumeAt != nil && now.After(*resumeAt) {
 		d.mu.Lock()
 		d.paused = false
 		d.resumeAt = nil
@@ -215,10 +222,41 @@ func (d *Daemon) tick() {
 	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	if d.tickNative(cfg, focusMode) {
+	if d.tickNativeAt(cfg, focusMode, now, tickDelta, agingFrozen) {
 		return
 	}
-	d.tickLegacy(cfg, focusMode)
+	d.tickLegacyAt(cfg, focusMode, now)
+}
+
+// beginAgingTick applies watch- and gap-based timer freezing once per tick.
+func (d *Daemon) beginAgingTick(now time.Time, interval time.Duration) (time.Duration, bool) {
+	// Wall time includes macOS sleep even when the monotonic clock does not.
+	wallNow := now.Round(0)
+	if d.lastTick.IsZero() {
+		d.lastTick = wallNow
+		return 0, false
+	}
+	delta := wallNow.Sub(d.lastTick)
+	d.lastTick = wallNow
+	if delta <= 0 {
+		return 0, false
+	}
+	d.mu.RLock()
+	away := d.locked || d.sleeping
+	d.mu.RUnlock()
+	if away || interval > 0 && delta > 3*interval {
+		d.tracker.ShiftLastActive(delta)
+		return delta, true
+	}
+	return delta, false
+}
+
+func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta time.Duration, alreadyFrozen bool) bool {
+	if alreadyFrozen || delta <= 0 || snap.IdleSeconds == nil || *snap.IdleSeconds <= interval.Seconds() {
+		return alreadyFrozen
+	}
+	d.tracker.ShiftLastActive(delta)
+	return true
 }
 
 // tickNative runs the helper-driven path (per-window tracking). A false
@@ -226,6 +264,16 @@ func (d *Daemon) tick() {
 // helper missing, or helper persistently failing. Transient snapshot errors
 // consume the tick instead so the two paths never both act in one tick.
 func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
+	return d.tickNativeAt(cfg, focusMode, time.Now(), 0, false)
+}
+
+func (d *Daemon) tickNativeAt(
+	cfg *config.Config,
+	focusMode bool,
+	now time.Time,
+	tickDelta time.Duration,
+	agingFrozen bool,
+) bool {
 	if !cfg.General.WindowTracking {
 		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
 		d.exitNative()
@@ -270,8 +318,8 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
 	}
+	d.freezeIdleTick(snap, cfg.General.CheckInterval.Duration, tickDelta, agingFrozen)
 
-	now := time.Now()
 	if focusMode {
 		// Window timers can't be maintained while focus mode owns the
 		// screen; drop them so leaving focus mode re-leases instead of
@@ -432,6 +480,10 @@ func (d *Daemon) exitNative() {
 // tickLegacy is the pre-helper osascript path with the old app-level
 // semantics: System Events polling and whole-app hides only.
 func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
+	d.tickLegacyAt(cfg, focusMode, time.Now())
+}
+
+func (d *Daemon) tickLegacyAt(cfg *config.Config, focusMode bool, now time.Time) {
 	frontmost, err := d.getFrontmostApp()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get frontmost app")
@@ -459,7 +511,7 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 			}
 		}
 	} else {
-		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, time.Now())
+		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, now)
 		for _, name := range toHide {
 			d.logger.Info().Str("app", name).Msg("hiding inactive app")
 			if err := d.hideApp(name); err != nil {

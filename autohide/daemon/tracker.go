@@ -91,6 +91,21 @@ func (t *Tracker) touchApp(name string, at time.Time) {
 	}
 }
 
+// ShiftLastActive freezes every app and window lease for an away interval.
+func (t *Tracker) ShiftLastActive(delta time.Duration) {
+	if delta <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, entry := range t.apps {
+		entry.LastActive = entry.LastActive.Add(delta)
+	}
+	for _, window := range t.windows {
+		window.LastActive = window.LastActive.Add(delta)
+	}
+}
+
 func NewTracker() *Tracker {
 	return &Tracker{
 		apps:    make(map[string]*AppState),
@@ -167,12 +182,21 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			delete(t.apps, name)
 		}
 	}
+	if !running[t.lastRegularFrontmost] {
+		t.lastRegularFrontmost = ""
+	}
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
 			entry.LastActive = now
 		}
 	}
-	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
+	frontmost := snap.Frontmost.Name
+	if _, ok := t.apps[frontmost]; ok {
+		t.lastRegularFrontmost = frontmost
+	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
+		frontmost = t.lastRegularFrontmost
+	}
+	if entry, ok := t.apps[frontmost]; ok {
 		entry.LastActive = now
 		entry.Hidden = false
 		entry.DeferUntil = time.Time{}
@@ -183,7 +207,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	for name, entry := range t.apps {
 		// Zero-window apps: hiding them is invisible and re-hide loops
 		// after unhide; skip.
-		if name == snap.Frontmost.Name || entry.Hidden || winsByApp[name] == 0 {
+		if name == frontmost || entry.Hidden || winsByApp[name] == 0 {
 			continue
 		}
 		if now.Before(entry.DeferUntil) {

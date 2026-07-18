@@ -129,6 +129,63 @@ func TestOlderEventCannotMoveLastActiveBackward(t *testing.T) {
 	}
 }
 
+func TestShiftLastActiveFreezesAppAndWindowAging(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ShiftLastActive(2 * time.Minute)
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(120)) {
+		t.Fatalf("shifted app lease = %v, want t+120s", got)
+	}
+	if got, _ := windowLastActive(tr.List(cfg), 1); !got.Equal(at(120)) {
+		t.Fatalf("shifted window lease = %v, want t+120s", got)
+	}
+	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(130)); hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("shifted-away time must not age the app")
+	}
+	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(181)); !hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("app should hide after a full active timeout following the shift")
+	}
+}
+
+func TestUnresolvedFrontmostRefreshesLastRegularApp(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
+	dec := tr.Update(cfg, overlay, at(70))
+	if hasApp(dec.HideApps, "Terminal") {
+		t.Fatal("the regular app beneath an accessory overlay must stay exempt")
+	}
+	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(70)) {
+		t.Fatalf("underlying app lease = %v, want t+70s", got)
+	}
+}
+
+func TestActivationEventUpdatesOverlayFallback(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ActivateApp("Google Chrome", at(55))
+	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
+	dec := tr.Update(cfg, overlay, at(70))
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("the latest regular activation must become the overlay fallback")
+	}
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
+		t.Fatalf("event-selected fallback lease = %v, want t+70s", got)
+	}
+}
+
 // App-hiding must work with no focused window and AX untrusted — those gated
 // only the removed window tier, never hiding.
 func TestAppHidesWithoutFocusOrAX(t *testing.T) {

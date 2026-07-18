@@ -13,6 +13,7 @@ import (
 const fullSnapshotJSON = `{
   "ax_trusted": true,
   "screen_recording": true,
+  "idle_seconds": 12.5,
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
@@ -35,6 +36,9 @@ func TestParseSnapshotFull(t *testing.T) {
 	}
 	if snap.ScreenRecording == nil || !*snap.ScreenRecording {
 		t.Errorf("screen_recording = %v, want true", snap.ScreenRecording)
+	}
+	if snap.IdleSeconds == nil || *snap.IdleSeconds != 12.5 {
+		t.Errorf("idle_seconds = %v, want 12.5", snap.IdleSeconds)
 	}
 	if snap.Frontmost.Pid != 100 || snap.Frontmost.Name != "Google Chrome" {
 		t.Errorf("frontmost = %+v", snap.Frontmost)
@@ -60,6 +64,9 @@ func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
 	}
 	if snap.ScreenRecording != nil {
 		t.Errorf("absent screen_recording must stay unknown (old helper), got %v", *snap.ScreenRecording)
+	}
+	if snap.IdleSeconds != nil {
+		t.Errorf("absent idle_seconds must stay unknown (old helper), got %v", *snap.IdleSeconds)
 	}
 }
 

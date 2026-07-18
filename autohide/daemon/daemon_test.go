@@ -71,6 +71,67 @@ func TestHandleWatchEventTouchesAppsAndTracksAwayState(t *testing.T) {
 	}
 }
 
+func TestSuspendSizedTickGapFreezesAging(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+
+	d.beginAgingTick(at(0), 5*time.Second)
+	delta, frozen := d.beginAgingTick(at(20), 5*time.Second)
+	if delta != 20*time.Second || !frozen {
+		t.Fatalf("gap result = (%v, %v), want (20s, true)", delta, frozen)
+	}
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+		t.Fatalf("gap-shifted lease = %v, want t+20s", got)
+	}
+}
+
+func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.locked = true
+
+	delta, frozen := d.beginAgingTick(at(5), 5*time.Second)
+	idle := 30.0
+	frozen = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, frozen)
+	if !frozen {
+		t.Fatal("locked/idle tick must freeze aging")
+	}
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
+		t.Fatalf("combined gates shifted more than once: lease = %v, want t+5s", got)
+	}
+
+	d.locked = false
+	delta, frozen = d.beginAgingTick(at(10), 5*time.Second)
+	frozen = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, frozen)
+	if !frozen {
+		t.Fatal("idle tick must freeze aging")
+	}
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(10)) {
+		t.Fatalf("idle-shifted lease = %v, want t+10s", got)
+	}
+}
+
+func TestSleepingTickFreezesAging(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.sleeping = true
+
+	if _, frozen := d.beginAgingTick(at(5), 5*time.Second); !frozen {
+		t.Fatal("sleeping tick must freeze aging")
+	}
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
+		t.Fatalf("sleep-shifted lease = %v, want t+5s", got)
+	}
+}
+
 func testDaemon(t *testing.T, helperScript string) *Daemon {
 	t.Helper()
 	cfg := config.Default()
