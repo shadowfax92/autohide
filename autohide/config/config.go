@@ -57,10 +57,16 @@ type MenubarConfig struct {
 	TimeoutPresets []Duration `toml:"timeout_presets"`
 }
 
+type FocusConfig struct {
+	KeepRecent int      `toml:"keep_recent"`
+	Grace      Duration `toml:"grace"`
+}
+
 type Config struct {
 	General GeneralConfig        `toml:"general"`
 	Apps    map[string]AppConfig `toml:"apps"`
 	Menubar MenubarConfig        `toml:"menubar"`
+	Focus   FocusConfig          `toml:"focus"`
 }
 
 func Default() *Config {
@@ -81,6 +87,10 @@ func Default() *Config {
 				{2 * time.Minute},
 				{5 * time.Minute},
 			},
+		},
+		Focus: FocusConfig{
+			KeepRecent: 3,
+			Grace:      Duration{10 * time.Second},
 		},
 	}
 }
@@ -120,8 +130,18 @@ func Load(path string) (*Config, error) {
 	if cfg.Apps == nil {
 		cfg.Apps = make(map[string]AppConfig)
 	}
+	cfg.normalize()
 
 	return cfg, nil
+}
+
+func (c *Config) normalize() {
+	if c.Focus.KeepRecent < 1 {
+		c.Focus.KeepRecent = 1
+	}
+	if c.Focus.Grace.Duration < 0 {
+		c.Focus.Grace.Duration = 0
+	}
 }
 
 // Save writes atomically (temp file + rename): the daemon hot-reloads this
