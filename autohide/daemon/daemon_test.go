@@ -38,6 +38,22 @@ func TestResolveWindowStatus(t *testing.T) {
 	}
 }
 
+func TestResetTickerInterval(t *testing.T) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	if got := resetTickerInterval(ticker, time.Hour, 5*time.Millisecond); got != 5*time.Millisecond {
+		t.Fatalf("reset interval = %v, want 5ms", got)
+	}
+	select {
+	case <-ticker.C:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ticker did not adopt the reloaded interval")
+	}
+	if got := resetTickerInterval(ticker, 5*time.Millisecond, 0); got != 5*time.Millisecond {
+		t.Fatalf("invalid interval changed ticker to %v", got)
+	}
+}
+
 func TestHandleWatchEventTouchesAppsAndTracksAwayState(t *testing.T) {
 	d := testDaemon(t, "")
 	apps := []SnapApp{chromeApp(), terminalApp()}

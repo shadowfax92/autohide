@@ -183,8 +183,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			d.tick()
+			d.mu.RLock()
+			nextInterval := d.cfg.General.CheckInterval.Duration
+			d.mu.RUnlock()
+			previousInterval := interval
+			interval = resetTickerInterval(ticker, interval, nextInterval)
+			if interval != previousInterval {
+				d.logger.Info().Dur("from", previousInterval).Dur("to", interval).Msg("check interval changed")
+			}
 		}
 	}
+}
+
+func resetTickerInterval(ticker *time.Ticker, current, next time.Duration) time.Duration {
+	if next <= 0 || next == current {
+		return current
+	}
+	ticker.Reset(next)
+	return next
 }
 
 func (d *Daemon) tick() {
@@ -222,10 +238,10 @@ func (d *Daemon) tickAt(now time.Time) {
 	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	if d.tickNativeAt(cfg, focusMode, now, tickDelta, agingFrozen) {
+	if d.tickNativeWithAging(cfg, focusMode, tickDelta, agingFrozen) {
 		return
 	}
-	d.tickLegacyAt(cfg, focusMode, now)
+	d.tickLegacy(cfg, focusMode)
 }
 
 // beginAgingTick applies watch- and gap-based timer freezing once per tick.
@@ -264,13 +280,12 @@ func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta time.Duration, a
 // helper missing, or helper persistently failing. Transient snapshot errors
 // consume the tick instead so the two paths never both act in one tick.
 func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
-	return d.tickNativeAt(cfg, focusMode, time.Now(), 0, false)
+	return d.tickNativeWithAging(cfg, focusMode, 0, false)
 }
 
-func (d *Daemon) tickNativeAt(
+func (d *Daemon) tickNativeWithAging(
 	cfg *config.Config,
 	focusMode bool,
-	now time.Time,
 	tickDelta time.Duration,
 	agingFrozen bool,
 ) bool {
@@ -319,6 +334,7 @@ func (d *Daemon) tickNativeAt(
 		d.tracker.ResetWindows()
 	}
 	d.freezeIdleTick(snap, cfg.General.CheckInterval.Duration, tickDelta, agingFrozen)
+	now := time.Now()
 
 	if focusMode {
 		// Window timers can't be maintained while focus mode owns the
@@ -480,10 +496,6 @@ func (d *Daemon) exitNative() {
 // tickLegacy is the pre-helper osascript path with the old app-level
 // semantics: System Events polling and whole-app hides only.
 func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
-	d.tickLegacyAt(cfg, focusMode, time.Now())
-}
-
-func (d *Daemon) tickLegacyAt(cfg *config.Config, focusMode bool, now time.Time) {
 	frontmost, err := d.getFrontmostApp()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get frontmost app")
@@ -511,7 +523,7 @@ func (d *Daemon) tickLegacyAt(cfg *config.Config, focusMode bool, now time.Time)
 			}
 		}
 	} else {
-		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, now)
+		toHide := d.tracker.UpdateLegacy(cfg, frontmost, visible, time.Now())
 		for _, name := range toHide {
 			d.logger.Info().Str("app", name).Msg("hiding inactive app")
 			if err := d.hideApp(name); err != nil {

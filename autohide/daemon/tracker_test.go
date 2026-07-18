@@ -191,6 +191,74 @@ func TestOlderEventCannotMoveLastActiveBackward(t *testing.T) {
 	}
 }
 
+func TestSnapshotCannotMoveEventTimestampBackward(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ActivateApp("Google Chrome", at(75))
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(75)) {
+		t.Fatalf("snapshot regressed event timestamp to %v", got)
+	}
+}
+
+func TestLegacyPollCannotMoveEventTimestampBackward(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	visible := []string{"Terminal", "Google Chrome"}
+
+	tr.UpdateLegacy(cfg, "Terminal", visible, at(0))
+	tr.ActivateApp("Terminal", at(75))
+	tr.UpdateLegacy(cfg, "Terminal", visible, at(70))
+	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
+		t.Fatalf("legacy poll regressed event timestamp to %v", got)
+	}
+}
+
+func TestRelaunchedAppGetsFreshLifetimeState(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	relaunched := []SnapApp{{Pid: 101, Name: "Google Chrome"}, terminalApp()}
+	terminalOnly := []SnapWindow{win(10, 200, "Terminal")}
+	dec := tr.Update(cfg, snap(terminalApp(), 10, relaunched, terminalOnly), at(70))
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("a relaunched zero-window app must not inherit stale hide eligibility")
+	}
+	state := tr.apps["Google Chrome"]
+	if state.Pid != 101 || state.SeenWithWindows || !state.LastActive.Equal(at(70)) {
+		t.Fatalf("relaunched state = %+v", state)
+	}
+}
+
+func TestPreSnapshotActivationSeedsOverlayFallback(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	tr.ActivateApp("Terminal", at(5))
+	tr.ActivateApp("Spotlight", at(6))
+	if tr.Count() != 0 {
+		t.Fatal("unreconciled app events must not create tracker entries")
+	}
+
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
+	tr.Update(cfg, overlay, at(10))
+	dec := tr.Update(cfg, overlay, at(75))
+	if hasApp(dec.HideApps, "Terminal") {
+		t.Fatal("the validated pre-snapshot activation must remain the overlay fallback")
+	}
+	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
+		t.Fatalf("pre-snapshot fallback lease = %v, want t+75s", got)
+	}
+}
+
 func TestShiftLastActiveFreezesAppAndWindowAging(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()

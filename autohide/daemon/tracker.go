@@ -49,6 +49,7 @@ type Tracker struct {
 	windows              map[uint32]*WindowState
 	axTrustedPrev        bool
 	lastRegularFrontmost string
+	activationCandidates map[string]time.Time
 }
 
 // TouchApp advances an app lease using an activity event timestamp.
@@ -68,9 +69,11 @@ func (t *Tracker) ActivateApp(name string, at time.Time) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if previous, ok := t.activationCandidates[name]; !ok || at.After(previous) {
+		t.activationCandidates[name] = at
+	}
 	entry, known := t.apps[name]
 	if !known {
-		t.apps[name] = &AppState{LastActive: at}
 		return
 	}
 	if at.After(entry.LastActive) {
@@ -84,7 +87,6 @@ func (t *Tracker) ActivateApp(name string, at time.Time) {
 func (t *Tracker) touchApp(name string, at time.Time) {
 	entry, ok := t.apps[name]
 	if !ok {
-		t.apps[name] = &AppState{LastActive: at}
 		return
 	}
 	if at.After(entry.LastActive) {
@@ -109,8 +111,9 @@ func (t *Tracker) ShiftLastActive(delta time.Duration) {
 
 func NewTracker() *Tracker {
 	return &Tracker{
-		apps:    make(map[string]*AppState),
-		windows: make(map[uint32]*WindowState),
+		apps:                 make(map[string]*AppState),
+		windows:              make(map[uint32]*WindowState),
+		activationCandidates: make(map[string]time.Time),
 	}
 }
 
@@ -165,11 +168,15 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		}
 	}
 
+	appCounts := make(map[string]int, len(snap.Apps))
+	for _, app := range snap.Apps {
+		appCounts[app.Name]++
+	}
 	running := make(map[string]bool, len(snap.Apps))
 	for _, a := range snap.Apps {
 		running[a.Name] = true
 		entry, ok := t.apps[a.Name]
-		if !ok {
+		if !ok || appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid {
 			entry = &AppState{LastActive: now}
 			t.apps[a.Name] = entry
 		}
@@ -191,17 +198,33 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
-			entry.LastActive = now
+			if now.After(entry.LastActive) {
+				entry.LastActive = now
+			}
 		}
 	}
 	frontmost := snap.Frontmost.Name
 	if _, ok := t.apps[frontmost]; ok {
 		t.lastRegularFrontmost = frontmost
 	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
-		frontmost = t.lastRegularFrontmost
+		var latest time.Time
+		for name, activatedAt := range t.activationCandidates {
+			if running[name] && (latest.IsZero() || activatedAt.After(latest)) {
+				frontmost = name
+				latest = activatedAt
+			}
+		}
+		if frontmost == "" {
+			frontmost = t.lastRegularFrontmost
+		} else {
+			t.lastRegularFrontmost = frontmost
+		}
 	}
+	clear(t.activationCandidates)
 	if entry, ok := t.apps[frontmost]; ok {
-		entry.LastActive = now
+		if now.After(entry.LastActive) {
+			entry.LastActive = now
+		}
 		entry.Hidden = false
 		entry.DeferUntil = time.Time{}
 	}
@@ -255,7 +278,9 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 	defer t.mu.Unlock()
 
 	if state, ok := t.apps[frontmost]; ok {
-		state.LastActive = now
+		if now.After(state.LastActive) {
+			state.LastActive = now
+		}
 		state.Hidden = false
 	} else {
 		t.apps[frontmost] = &AppState{LastActive: now}
