@@ -116,6 +116,13 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			entry = &AppState{LastActive: now}
 			t.apps[a.Name] = entry
 		}
+		restoredPID, restored := t.restoredApps[a.Name]
+		// Legacy state has no PID, so only a known mismatch proves a relaunch.
+		if restored && restoredPID != 0 && a.Pid != 0 && restoredPID != a.Pid {
+			entry.LastActive = now
+			entry.DeferUntil = time.Time{}
+			delete(t.restoredApps, a.Name)
+		}
 		entry.Pid = a.Pid
 		// Mirror reality: a failed hide self-heals (still visible next tick
 		// -> re-decided), a user unhide is seen without polling extra state.
@@ -128,14 +135,8 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
-			restoredPID, restored := t.restoredApps[name]
-			// Legacy state has no PID, so only a known mismatch proves a relaunch.
-			pidChanged := restored && restoredPID != 0 && entry.Pid != 0 && restoredPID != entry.Pid
-			if !restored || pidChanged {
+			if _, restored := t.restoredApps[name]; !restored {
 				entry.LastActive = now
-			}
-			if pidChanged {
-				entry.DeferUntil = time.Time{}
 			}
 		}
 	}
