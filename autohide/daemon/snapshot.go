@@ -29,6 +29,12 @@ type SnapApp struct {
 	Pid    int32  `json:"pid"`
 	Name   string `json:"name"`
 	Hidden bool   `json:"hidden"`
+	// nil identifies an older helper that predates fullscreen classification.
+	Unhidable *string `json:"unhidable"`
+}
+
+func (a SnapApp) isUnhidable() bool {
+	return a.Unhidable != nil && *a.Unhidable != ""
 }
 
 type SnapWindow struct {

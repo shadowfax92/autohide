@@ -170,12 +170,12 @@ func (s *Server) handle(conn net.Conn) {
 		resp = s.handleHideAll()
 	case "focus_on":
 		s.daemon.SetFocusMode(true)
-		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: true}}
+		resp = ipc.Response{OK: true, Data: s.focusModeData(true)}
 	case "focus_off":
 		s.daemon.SetFocusMode(false)
-		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: false}}
+		resp = ipc.Response{OK: true, Data: s.focusModeData(false)}
 	case "focus_status":
-		resp = ipc.Response{OK: true, Data: ipc.FocusModeData{Active: s.daemon.IsFocusMode()}}
+		resp = ipc.Response{OK: true, Data: s.focusModeData(s.daemon.IsFocusMode())}
 	default:
 		resp = ipc.Response{Error: fmt.Sprintf("unknown command: %s", req.Command)}
 	}
@@ -199,6 +199,7 @@ func (s *Server) handleStatus() ipc.Response {
 		Running:         true,
 		Paused:          paused,
 		FocusMode:       s.daemon.IsFocusMode(),
+		FocusKeepRecent: cfg.Focus.KeepRecent,
 		Uptime:          s.daemon.Uptime().Round(time.Second).String(),
 		TrackedCount:    s.daemon.TrackerCount(),
 		WindowTracking:  s.daemon.WindowTrackingStatus(),
@@ -211,6 +212,16 @@ func (s *Server) handleStatus() ipc.Response {
 		data.ResumeAt = resumeAt.Format(time.RFC3339)
 	}
 	return ipc.Response{OK: true, Data: data}
+}
+
+func (s *Server) focusModeData(active bool) ipc.FocusModeData {
+	cfg := s.daemon.Config()
+	return ipc.FocusModeData{
+		Active:     active,
+		KeepRecent: cfg.Focus.KeepRecent,
+		Grace:      config.FormatDuration(cfg.Focus.Grace.Duration),
+		KeepSet:    s.daemon.tracker.RecentApps(cfg.Focus.KeepRecent),
+	}
 }
 
 func (s *Server) handlePause(req ipc.Request) ipc.Response {
@@ -278,7 +289,7 @@ func (s *Server) handleList(req ipc.Request) ipc.Response {
 	apps := make([]ipc.AppInfo, 0, len(tracked))
 	for _, a := range tracked {
 		remaining := a.Timeout - now.Sub(a.LastActive)
-		if remaining < 0 || a.Hidden || a.Disabled {
+		if remaining < 0 || a.Hidden || a.Disabled || a.Unhidable != "" {
 			remaining = 0
 		}
 		info := ipc.AppInfo{
@@ -286,6 +297,7 @@ func (s *Server) handleList(req ipc.Request) ipc.Response {
 			LastActive:    a.LastActive.Format(time.RFC3339),
 			Timeout:       a.Timeout.String(),
 			Hidden:        a.Hidden,
+			Unhidable:     a.Unhidable,
 			TimeRemaining: remaining.Round(time.Second).String(),
 			Disabled:      a.Disabled,
 			WindowCount:   len(a.Windows),

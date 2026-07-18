@@ -22,6 +22,9 @@ type Daemon struct {
 	tracker *Tracker
 	logger  zerolog.Logger
 
+	statePath         string
+	stateSaveInterval time.Duration
+
 	actionMu      sync.Mutex
 	lastTick      time.Time
 	helper        *Helper
@@ -50,15 +53,17 @@ type Daemon struct {
 
 func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
 	return &Daemon{
-		cfgPath:         cfgPath,
-		cfg:             cfg,
-		tracker:         NewTracker(),
-		logger:          logger,
-		startTime:       time.Now(),
-		windowStatus:    "starting",
-		getFrontmostApp: GetFrontmostApp,
-		getVisibleApps:  GetVisibleApps,
-		hideApp:         HideApp,
+		cfgPath:           cfgPath,
+		cfg:               cfg,
+		tracker:           NewTracker(),
+		logger:            logger,
+		statePath:         defaultTrackerStatePath(),
+		stateSaveInterval: defaultStateSaveInterval,
+		startTime:         time.Now(),
+		windowStatus:      "starting",
+		getFrontmostApp:   GetFrontmostApp,
+		getVisibleApps:    GetVisibleApps,
+		hideApp:           HideApp,
 	}
 }
 
@@ -158,10 +163,16 @@ func (d *Daemon) Permissions() (axTrusted, screenRecording *bool) {
 	return axTrusted, screenRecording
 }
 
+// Run restores timer state, then services activity and persistence ticks until shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
+	d.restoreState()
+
 	interval := d.cfg.General.CheckInterval.Duration
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	stateTicker := time.NewTicker(d.stateSaveInterval)
+	defer stateTicker.Stop()
+	defer d.saveState()
 
 	d.logger.Info().
 		Dur("check_interval", interval).
@@ -193,6 +204,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if interval != previousInterval {
 				d.logger.Info().Dur("from", previousInterval).Dur("to", interval).Msg("check interval changed")
 			}
+		case <-stateTicker.C:
+			d.saveState()
 		}
 	}
 }
@@ -346,14 +359,8 @@ func (d *Daemon) tickNativeWithAging(
 		// screen; drop them so leaving focus mode re-leases instead of
 		// showing every window as long idle.
 		d.tracker.ResetWindows()
-		// Focus mode: hide everything except frontmost immediately
-		for _, app := range snap.Apps {
-			if app.Hidden || app.Name == snap.Frontmost.Name {
-				continue
-			}
-			if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
-				continue
-			}
+		dec := d.tracker.FocusDecisions(cfg, snap, now)
+		for _, app := range dec.HideApps {
 			d.logger.Debug().Str("app", app.Name).Msg("focus mode: hiding app")
 			if err := d.helper.Hide(app.Pid); err != nil {
 				d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
@@ -432,6 +439,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	d.tracker.ReconcileApps(snap, time.Now())
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
@@ -439,7 +447,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 
 	var data ipc.HideAllData
 	for _, app := range snap.Apps {
-		if app.Hidden || app.Name == snap.Frontmost.Name {
+		if app.Hidden || app.Name == snap.Frontmost.Name || app.isUnhidable() {
 			continue
 		}
 		if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
@@ -468,8 +476,10 @@ func (d *Daemon) hideAllLegacy(cfg *config.Config) (ipc.HideAllData, error) {
 		return data, err
 	}
 
-	for _, name := range visible {
-		if name == frontmost {
+	frontmost = normalizeLegacyAppName(frontmost)
+	for _, rawName := range visible {
+		name := normalizeLegacyAppName(rawName)
+		if name == "" || name == frontmost {
 			continue
 		}
 		_, disabled := cfg.EffectiveTimeout(name)
@@ -507,6 +517,7 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 		return
 	}
 
+	frontmost = normalizeLegacyAppName(frontmost)
 	visible, err := d.getVisibleApps()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get visible apps")
@@ -514,17 +525,11 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 	}
 
 	if focusMode {
-		for _, name := range visible {
-			if name == frontmost {
-				continue
-			}
-			_, disabled := cfg.EffectiveTimeout(name)
-			if disabled {
-				continue
-			}
-			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
-			if err := d.hideApp(name); err != nil {
-				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+		dec := d.tracker.FocusDecisions(cfg, legacyFocusSnapshot(frontmost, visible), time.Now())
+		for _, app := range dec.HideApps {
+			d.logger.Debug().Str("app", app.Name).Msg("focus mode: hiding app")
+			if err := d.hideApp(app.Name); err != nil {
+				d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
 			}
 		}
 	} else {
@@ -535,6 +540,31 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
+	}
+}
+
+// legacyFocusSnapshot adapts app polling to the shared focus policy.
+func legacyFocusSnapshot(frontmost string, visible []string) *Snapshot {
+	seen := make(map[string]bool, len(visible)+1)
+	apps := make([]SnapApp, 0, len(visible)+1)
+	windows := make([]SnapWindow, 0, len(visible)+1)
+	add := func(name string) {
+		name = normalizeLegacyAppName(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		apps = append(apps, SnapApp{Name: name})
+		windows = append(windows, SnapWindow{ID: uint32(len(windows) + 1), App: name})
+	}
+	add(frontmost)
+	for _, name := range visible {
+		add(name)
+	}
+	return &Snapshot{
+		Frontmost: AppRef{Name: frontmost},
+		Apps:      apps,
+		Windows:   windows,
 	}
 }
 

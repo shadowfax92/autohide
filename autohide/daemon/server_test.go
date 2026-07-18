@@ -63,12 +63,54 @@ func TestHandleListWindowDetail(t *testing.T) {
 	}
 }
 
+func TestHandleListCarriesUnhidableReason(t *testing.T) {
+	cfg := testCfg()
+	d := New(cfg, "", zerolog.Nop())
+	chrome := chromeApp()
+	chrome.Unhidable = stringPtr("fullscreen")
+	d.tracker.Update(cfg, snap(chrome, 1, []SnapApp{chrome}, []SnapWindow{
+		{ID: 1, Pid: 100, App: "Google Chrome", Title: "Docs"},
+	}), at(0))
+
+	data := NewServer(d, "", zerolog.Nop()).handleList(ipc.Request{Command: "list"}).Data.(ipc.ListData)
+	if len(data.Apps) != 1 || data.Apps[0].Unhidable != "fullscreen" {
+		t.Fatalf("list data = %+v, want fullscreen reason", data.Apps)
+	}
+	if data.Apps[0].TimeRemaining != "0s" {
+		t.Errorf("unhidable remaining = %q, want 0s", data.Apps[0].TimeRemaining)
+	}
+}
+
 func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 	s := seededServer(t)
 	resp := s.handleStatus()
 	data := resp.Data.(ipc.StatusData)
 	if data.WindowTracking != "starting" {
 		t.Errorf("window_tracking = %q, want starting (pre-first-tick)", data.WindowTracking)
+	}
+}
+
+func TestFocusModeDataCarriesConfiguredPolicyAndKeepSet(t *testing.T) {
+	s := seededServer(t)
+	s.daemon.cfg.Focus.KeepRecent = 2
+	s.daemon.cfg.Focus.Grace = config.Duration{Duration: 30 * time.Second}
+
+	data := s.focusModeData(true)
+	if !data.Active || data.KeepRecent != 2 || data.Grace != "30s" {
+		t.Fatalf("focus data = %+v", data)
+	}
+	want := []string{"Google Chrome"}
+	if !equalStrings(data.KeepSet, want) {
+		t.Errorf("keep_set = %v, want %v", data.KeepSet, want)
+	}
+}
+
+func TestHandleStatusCarriesFocusKeepRecent(t *testing.T) {
+	s := seededServer(t)
+	s.daemon.cfg.Focus.KeepRecent = 4
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.FocusKeepRecent != 4 {
+		t.Errorf("focus_keep_recent = %d, want 4", data.FocusKeepRecent)
 	}
 }
 

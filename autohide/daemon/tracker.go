@@ -8,15 +8,15 @@ import (
 	"autohide/config"
 )
 
-// An ineffective hide (e.g. a Split View member: the request is accepted but
-// nothing hides) would otherwise be re-decided every tick via the reality
-// mirror.
+// An accepted hide that remains ineffective for an unknown reason would
+// otherwise be re-decided every tick via the reality mirror.
 const hideRetryBackoff = 5 * time.Minute
 
 type AppState struct {
 	Pid             int32
 	LastActive      time.Time
 	Hidden          bool
+	Unhidable       string
 	DeferUntil      time.Time
 	SeenWithWindows bool
 }
@@ -39,6 +39,7 @@ type AppInfo struct {
 	LastActive time.Time
 	Timeout    time.Duration
 	Hidden     bool
+	Unhidable  string
 	Disabled   bool
 	Windows    []WindowDetail
 }
@@ -52,6 +53,8 @@ type Tracker struct {
 	mu                   sync.RWMutex
 	apps                 map[string]*AppState
 	windows              map[uint32]*WindowState
+	restoredApps         map[string]int32
+	recent               []string
 	axTrustedPrev        bool
 	lastRegularFrontmost string
 	activationCandidates map[string]activationCandidate
@@ -78,16 +81,20 @@ func (t *Tracker) ActivateApp(pid int32, name string, at time.Time) {
 		t.activationCandidates[name] = activationCandidate{Pid: pid, At: at}
 	}
 	entry, known := t.apps[name]
-	if !known || entry.Pid != 0 && entry.Pid != pid {
+	if !known {
 		return
 	}
-	entry.Pid = pid
 	if at.After(entry.LastActive) {
 		entry.LastActive = at
 	}
 	entry.Hidden = false
 	entry.DeferUntil = time.Time{}
+	if entry.Pid != 0 && entry.Pid != pid {
+		return
+	}
+	entry.Pid = pid
 	t.lastRegularFrontmost = name
+	t.recordFrontmostLocked(name)
 }
 
 func (t *Tracker) touchApp(name string, at time.Time) {
@@ -174,79 +181,15 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		}
 	}
 
-	appCounts := make(map[string]int, len(snap.Apps))
-	runningPIDs := make(map[string]map[int32]bool, len(snap.Apps))
-	for _, app := range snap.Apps {
-		appCounts[app.Name]++
-		if runningPIDs[app.Name] == nil {
-			runningPIDs[app.Name] = make(map[int32]bool)
-		}
-		runningPIDs[app.Name][app.Pid] = true
-	}
-	running := make(map[string]bool, len(snap.Apps))
-	for _, a := range snap.Apps {
-		running[a.Name] = true
-		entry, ok := t.apps[a.Name]
-		replaced := ok && appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid
-		if !ok || replaced {
-			entry = &AppState{LastActive: now}
-			t.apps[a.Name] = entry
-			if replaced && t.lastRegularFrontmost == a.Name {
-				t.lastRegularFrontmost = ""
-			}
-		}
-		entry.Pid = a.Pid
-		if winsByApp[a.Name] > 0 {
-			entry.SeenWithWindows = true
-		}
-		// Mirror reality: a failed hide self-heals (still visible next tick
-		// -> re-decided), a user unhide is seen without polling extra state.
-		entry.Hidden = a.Hidden
-	}
-	for name := range t.apps {
-		if !running[name] {
-			delete(t.apps, name)
-		}
-	}
-	if !running[t.lastRegularFrontmost] {
-		t.lastRegularFrontmost = ""
-	}
-	for name := range appeared {
-		if entry, ok := t.apps[name]; ok {
-			if now.After(entry.LastActive) {
-				entry.LastActive = now
-			}
-		}
-	}
-	frontmost := snap.Frontmost.Name
-	var latestCandidate time.Time
-	for name, candidate := range t.activationCandidates {
-		newerThanSnapshot := snap.StartedAt.IsZero() || !candidate.At.Before(snap.StartedAt)
-		seedsUnknownFrontmost := snap.Frontmost.Name == "" && t.lastRegularFrontmost == ""
-		if runningPIDs[name][candidate.Pid] && (newerThanSnapshot || seedsUnknownFrontmost) &&
-			(latestCandidate.IsZero() || candidate.At.After(latestCandidate)) {
-			frontmost = name
-			latestCandidate = candidate.At
-		}
-	}
-	if _, ok := t.apps[frontmost]; ok {
-		t.lastRegularFrontmost = frontmost
-	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
-		frontmost = t.lastRegularFrontmost
-	}
-	clear(t.activationCandidates)
-	if entry, ok := t.apps[frontmost]; ok {
-		if now.After(entry.LastActive) {
-			entry.LastActive = now
-		}
-		entry.Hidden = false
-		entry.DeferUntil = time.Time{}
-	}
+	frontmost := t.observeAppsLocked(snap, appeared, winsByApp, now)
+	// Window state is intentionally ephemeral; the first snapshot must not
+	// mistake every restored app's existing windows for a real reappearance.
+	t.restoredApps = nil
 
 	var dec Decisions
 
 	for name, entry := range t.apps {
-		if name == frontmost || entry.Hidden {
+		if name == frontmost || entry.Hidden || entry.Unhidable != "" {
 			continue
 		}
 		// Never hide a zero-window app until it has proven it owns a real
@@ -274,6 +217,202 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	return dec
 }
 
+// ReconcileApps mirrors snapshot app state without scheduling hide decisions.
+func (t *Tracker) ReconcileApps(snap *Snapshot, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.observeAppsLocked(snap, nil, nil, now)
+}
+
+// FocusDecisions keeps the running MRU working set visible and applies the
+// focus grace to every other eligible app.
+func (t *Tracker) FocusDecisions(cfg *config.Config, snap *Snapshot, now time.Time) Decisions {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	winsByApp := make(map[string]int, len(snap.Windows))
+	for _, w := range snap.Windows {
+		winsByApp[w.App]++
+	}
+	t.observeAppsLocked(snap, nil, winsByApp, now)
+
+	keepRecent := cfg.Focus.KeepRecent
+	if keepRecent < 1 {
+		keepRecent = 1
+	}
+	recent := t.recentAppsLocked(keepRecent)
+	keep := make(map[string]bool, len(recent))
+	for _, name := range recent {
+		keep[name] = true
+	}
+
+	grace := cfg.Focus.Grace.Duration
+	if grace < 0 {
+		grace = 0
+	}
+	var dec Decisions
+	for name, entry := range t.apps {
+		if keep[name] || entry.Hidden || entry.Unhidable != "" {
+			continue
+		}
+		if winsByApp[name] == 0 && (!cfg.General.HideOtherSpaces || !entry.SeenWithWindows) {
+			continue
+		}
+		if now.Before(entry.DeferUntil) {
+			continue
+		}
+		if _, disabled := cfg.EffectiveTimeout(name); disabled {
+			continue
+		}
+		if now.Sub(entry.LastActive) > grace {
+			dec.HideApps = append(dec.HideApps, AppRef{Pid: entry.Pid, Name: name})
+			entry.Hidden = true
+			entry.DeferUntil = now.Add(hideRetryBackoff)
+		}
+	}
+	sort.Slice(dec.HideApps, func(i, j int) bool {
+		return dec.HideApps[i].Name < dec.HideApps[j].Name
+	})
+	return dec
+}
+
+// RecentApps returns up to n running apps in most-recently-used order.
+func (t *Tracker) RecentApps(n int) []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.recentAppsLocked(n)
+}
+
+func (t *Tracker) observeAppsLocked(
+	snap *Snapshot,
+	appeared map[string]bool,
+	winsByApp map[string]int,
+	now time.Time,
+) string {
+	if winsByApp == nil {
+		winsByApp = make(map[string]int, len(snap.Windows))
+		for _, window := range snap.Windows {
+			winsByApp[window.App]++
+		}
+	}
+	appCounts := make(map[string]int, len(snap.Apps))
+	runningPIDs := make(map[string]map[int32]bool, len(snap.Apps))
+	for _, app := range snap.Apps {
+		appCounts[app.Name]++
+		if runningPIDs[app.Name] == nil {
+			runningPIDs[app.Name] = make(map[int32]bool)
+		}
+		runningPIDs[app.Name][app.Pid] = true
+	}
+	running := make(map[string]bool, len(snap.Apps))
+	for _, a := range snap.Apps {
+		running[a.Name] = true
+		entry, ok := t.apps[a.Name]
+		replaced := ok && appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid
+		if !ok || replaced {
+			entry = &AppState{LastActive: now}
+			t.apps[a.Name] = entry
+			if replaced {
+				delete(t.restoredApps, a.Name)
+				if t.lastRegularFrontmost == a.Name {
+					t.lastRegularFrontmost = ""
+				}
+			}
+		}
+		entry.Pid = a.Pid
+		entry.Unhidable = ""
+		if a.Unhidable != nil {
+			entry.Unhidable = *a.Unhidable
+		}
+		if winsByApp[a.Name] > 0 {
+			entry.SeenWithWindows = true
+		}
+		// Mirror reality: a failed hide self-heals (still visible next tick
+		// -> re-decided), a user unhide is seen without polling extra state.
+		entry.Hidden = a.Hidden
+	}
+	for name := range t.apps {
+		if !running[name] {
+			delete(t.apps, name)
+		}
+	}
+	if !running[t.lastRegularFrontmost] {
+		t.lastRegularFrontmost = ""
+	}
+	pruned := t.recent[:0]
+	for _, name := range t.recent {
+		if running[name] {
+			pruned = append(pruned, name)
+		}
+	}
+	t.recent = pruned
+	for name := range appeared {
+		if entry, ok := t.apps[name]; ok {
+			if _, restored := t.restoredApps[name]; !restored {
+				if now.After(entry.LastActive) {
+					entry.LastActive = now
+				}
+			}
+		}
+	}
+	frontmost := snap.Frontmost.Name
+	var latestCandidate time.Time
+	for name, candidate := range t.activationCandidates {
+		newerThanSnapshot := snap.StartedAt.IsZero() || !candidate.At.Before(snap.StartedAt)
+		seedsUnknownFrontmost := snap.Frontmost.Name == "" && t.lastRegularFrontmost == ""
+		if runningPIDs[name][candidate.Pid] && (newerThanSnapshot || seedsUnknownFrontmost) &&
+			(latestCandidate.IsZero() || candidate.At.After(latestCandidate)) {
+			frontmost = name
+			latestCandidate = candidate.At
+		}
+	}
+	if _, ok := t.apps[frontmost]; ok {
+		t.lastRegularFrontmost = frontmost
+	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
+		frontmost = t.lastRegularFrontmost
+	}
+	clear(t.activationCandidates)
+	if entry, ok := t.apps[frontmost]; ok {
+		if now.After(entry.LastActive) {
+			entry.LastActive = now
+		}
+		entry.Hidden = false
+		entry.DeferUntil = time.Time{}
+		t.recordFrontmostLocked(frontmost)
+	}
+	return frontmost
+}
+
+func (t *Tracker) recordFrontmostLocked(name string) {
+	if name == "" || len(t.recent) > 0 && t.recent[0] == name {
+		return
+	}
+	recent := make([]string, 1, len(t.recent)+1)
+	recent[0] = name
+	for _, existing := range t.recent {
+		if existing != name {
+			recent = append(recent, existing)
+		}
+	}
+	t.recent = recent
+}
+
+func (t *Tracker) recentAppsLocked(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	result := make([]string, 0, min(n, len(t.recent)))
+	for _, name := range t.recent {
+		if _, running := t.apps[name]; running {
+			result = append(result, name)
+			if len(result) == n {
+				break
+			}
+		}
+	}
+	return result
+}
+
 // ResetWindows drops all per-window state. Called when the native path
 // stops observing (mode fallback, focus mode) so timers and list data can't
 // rot; on re-entry windows re-register via the appearance rule (fresh lease).
@@ -291,24 +430,35 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if state, ok := t.apps[frontmost]; ok {
-		if now.After(state.LastActive) {
-			state.LastActive = now
+	frontmost = normalizeLegacyAppName(frontmost)
+	if frontmost != "" {
+		if state, ok := t.apps[frontmost]; ok {
+			if now.After(state.LastActive) {
+				state.LastActive = now
+			}
+			state.Hidden = false
+		} else {
+			t.apps[frontmost] = &AppState{LastActive: now}
 		}
-		state.Hidden = false
-	} else {
-		t.apps[frontmost] = &AppState{LastActive: now}
 	}
+	t.recordFrontmostLocked(frontmost)
 
-	for _, name := range visible {
+	visibleSet := make(map[string]bool, len(visible))
+	for _, rawName := range visible {
+		name := normalizeLegacyAppName(rawName)
+		if name == "" {
+			continue
+		}
+		visibleSet[name] = true
 		if _, ok := t.apps[name]; !ok {
 			t.apps[name] = &AppState{LastActive: now}
 		}
 	}
 
-	visibleSet := make(map[string]bool, len(visible))
-	for _, v := range visible {
-		visibleSet[v] = true
+	for name := range t.apps {
+		if normalizeLegacyAppName(name) == "" {
+			delete(t.apps, name)
+		}
 	}
 
 	var toHide []string
@@ -364,6 +514,7 @@ func (t *Tracker) List(cfg *config.Config) []AppInfo {
 			LastActive: state.LastActive,
 			Timeout:    timeout,
 			Hidden:     state.Hidden,
+			Unhidable:  state.Unhidable,
 			Disabled:   disabled,
 			Windows:    windows,
 		})

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,11 +62,11 @@ func TestHandleWatchEventTouchesAppsAndTracksAwayState(t *testing.T) {
 	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
 
 	d.handleWatchEvent(WatchEvent{TS: at(20).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
 		t.Fatalf("activate touch = %v, want t+20s", got)
 	}
 	d.handleWatchEvent(WatchEvent{TS: at(25).UnixMilli(), Type: "deactivate", Pid: 100, Name: "Google Chrome"})
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(25)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(25)) {
 		t.Fatalf("deactivate touch = %v, want t+25s", got)
 	}
 
@@ -98,7 +99,7 @@ func TestSuspendSizedTickGapFreezesAging(t *testing.T) {
 	if delta != 20*time.Second || shifted != 20*time.Second {
 		t.Fatalf("gap result = (%v, %v), want (20s, 20s)", delta, shifted)
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
 		t.Fatalf("gap-shifted lease = %v, want t+20s", got)
 	}
 }
@@ -117,7 +118,7 @@ func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
 	if shifted != 5*time.Second {
 		t.Fatal("locked/idle tick must freeze aging")
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
 		t.Fatalf("combined gates shifted more than once: lease = %v, want t+5s", got)
 	}
 
@@ -127,7 +128,7 @@ func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
 	if shifted != 5*time.Second {
 		t.Fatal("idle tick must freeze aging")
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(10)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(10)) {
 		t.Fatalf("idle-shifted lease = %v, want t+10s", got)
 	}
 }
@@ -143,7 +144,7 @@ func TestSleepingTickFreezesAging(t *testing.T) {
 	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 4*time.Second {
 		t.Fatal("sleeping tick must freeze aging")
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
 		t.Fatalf("sleep-shifted lease = %v, want t+4s", got)
 	}
 }
@@ -160,7 +161,7 @@ func TestLockIntervalBetweenTicksFreezesExactDuration(t *testing.T) {
 	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 2*time.Second {
 		t.Fatalf("between-tick lock shifted %v, want 2s", shifted)
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(2)) {
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(2)) {
 		t.Fatalf("lock-shifted lease = %v, want t+2s", got)
 	}
 }
@@ -189,6 +190,19 @@ func testDaemon(t *testing.T, helperScript string) *Daemon {
 	return d
 }
 
+func requireUnhidable(t *testing.T, d *Daemon, name, want string) {
+	t.Helper()
+	for _, app := range d.TrackerList() {
+		if app.Name == name {
+			if app.Unhidable != want {
+				t.Fatalf("%s list reason = %q, want %q", name, app.Unhidable, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s missing from tracker list", name)
+}
+
 const snapshotScript = "#!/bin/sh\ncat <<'JSON'\n" + fullSnapshotJSON + "\nJSON\n"
 
 const hideAllSnapshotJSON = `{
@@ -196,18 +210,104 @@ const hideAllSnapshotJSON = `{
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
-    {"pid": 100, "name": "Google Chrome", "hidden": false},
-    {"pid": 200, "name": "NoHide", "hidden": false},
-    {"pid": 300, "name": "Slack", "hidden": false},
-    {"pid": 400, "name": "Mail", "hidden": false},
-    {"pid": 500, "name": "Zoom", "hidden": true}
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 200, "name": "NoHide", "hidden": false, "unhidable": ""},
+    {"pid": 300, "name": "Slack", "hidden": false, "unhidable": ""},
+    {"pid": 400, "name": "Mail", "hidden": false, "unhidable": "fullscreen"},
+    {"pid": 500, "name": "Zoom", "hidden": true, "unhidable": ""},
+    {"pid": 600, "name": "Calendar", "hidden": false, "unhidable": ""}
   ],
   "windows": [
     {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
     {"id": 43, "pid": 300, "app": "Slack", "title": "General"},
-    {"id": 44, "pid": 400, "app": "Mail", "title": "Inbox"}
+    {"id": 44, "pid": 400, "app": "Mail", "title": "Inbox"},
+    {"id": 45, "pid": 600, "app": "Calendar", "title": "Week"}
   ]
 }`
+
+const focusSnapshotJSON = `{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false},
+    {"pid": 200, "name": "Terminal", "hidden": false},
+    {"pid": 300, "name": "Slack", "hidden": false},
+    {"pid": 400, "name": "Music", "hidden": false}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 200, "app": "Terminal", "title": "Shell"},
+    {"id": 44, "pid": 300, "app": "Slack", "title": "General"},
+    {"id": 45, "pid": 400, "app": "Music", "title": "Player"}
+  ]
+}`
+
+func TestFocusTickNativeHidesOnlyOutsideRecentSet(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/hide.log"
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+%s
+JSON
+;;
+hide)
+printf '%%s\n' "$2" >> %q
+;;
+esac
+`, focusSnapshotJSON, logPath)
+	d := testDaemon(t, script)
+	d.cfg.Focus.KeepRecent = 3
+	d.cfg.Focus.Grace = config.Duration{}
+
+	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
+	wins := []SnapWindow{
+		win(42, 100, "Google Chrome"),
+		win(43, 200, "Terminal"),
+		win(44, 300, "Slack"),
+		win(45, 400, "Music"),
+	}
+	past := time.Now().Add(-time.Second)
+	d.tracker.FocusDecisions(d.cfg, snap(terminalApp(), 43, apps, wins), past)
+	d.tracker.FocusDecisions(d.cfg, snap(apps[2], 44, apps, wins), past)
+	d.tracker.FocusDecisions(d.cfg, snap(chromeApp(), 42, apps, wins), past)
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus tick should run natively")
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(raw)); len(got) != 1 || got[0] != "400" {
+		t.Fatalf("helper hide pids = %v, want only Music pid 400", got)
+	}
+}
+
+func TestFocusTickLegacyHidesOnlyOutsideRecentSet(t *testing.T) {
+	d := testDaemon(t, "")
+	d.cfg.Focus.KeepRecent = 3
+	d.cfg.Focus.Grace = config.Duration{}
+	visible := []string{"Google Chrome", "Terminal", "Slack", "Music"}
+	past := time.Now().Add(-time.Second)
+	d.tracker.UpdateLegacy(d.cfg, "Terminal", visible, past)
+	d.tracker.UpdateLegacy(d.cfg, "Slack", visible, past)
+	d.tracker.UpdateLegacy(d.cfg, "Google Chrome", visible, past)
+	d.getFrontmostApp = func() (string, error) { return "Google Chrome", nil }
+	d.getVisibleApps = func() ([]string, error) { return visible, nil }
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	d.tickLegacy(d.cfg, true)
+	if len(hidden) != 1 || hidden[0] != "Music" {
+		t.Fatalf("legacy hidden apps = %v, want Music only", hidden)
+	}
+}
 
 func TestHideAllNativeSkipsIneligibleAppsAndCountsFailures(t *testing.T) {
 	dir := t.TempDir()
@@ -220,7 +320,7 @@ cat <<'JSON'
 JSON
 ;;
 hide)
-if [ "$2" = "400" ]; then
+if [ "$2" = "600" ]; then
   exit 1
 fi
 printf '%%s\n' "$2" >> %q
@@ -248,7 +348,102 @@ esac
 	}
 	got := strings.Fields(string(raw))
 	if len(got) != 1 || got[0] != "300" {
-		t.Fatalf("helper hide pids = %v, want only Slack pid 300", got)
+		t.Fatalf("helper hide pids = %v, want only Slack pid 300 (Mail skipped, Calendar failed)", got)
+	}
+	requireUnhidable(t, d, "Mail", "fullscreen")
+}
+
+func TestFocusModeSkipsUnhidableApps(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/hide.log"
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+%s
+JSON
+;;
+hide)
+printf '%%s\n' "$2" >> %q
+;;
+esac
+`, hideAllSnapshotJSON, logPath)
+	d := testDaemon(t, script)
+	d.cfg.Apps["NoHide"] = config.AppConfig{Disabled: true}
+	snap, err := parseSnapshot([]byte(hideAllSnapshotJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.tracker.FocusDecisions(d.cfg, snap, time.Now().Add(-time.Minute))
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus mode should run through the native helper")
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(raw))
+	want := []string{"600", "300"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("focus-mode helper pids = %v, want %v", got, want)
+	}
+	requireUnhidable(t, d, "Mail", "fullscreen")
+}
+
+func TestFocusModeLogsStillVisibleAsWarning(t *testing.T) {
+	script := `#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 300, "name": "Slack", "hidden": false, "unhidable": ""}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 300, "app": "Slack", "title": "General"}
+  ]
+}
+JSON
+;;
+hide)
+echo 'hide: app pid 300 still visible after 1.0s grace (AXError -25211)' >&2
+exit 1
+;;
+esac
+`
+	var logs bytes.Buffer
+	d := New(config.Default(), "", zerolog.New(&logs))
+	d.helper = NewHelper(writeFakeHelper(t, t.TempDir(), script))
+	snap, err := parseSnapshot([]byte(`{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 300, "name": "Slack", "hidden": false, "unhidable": ""}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 300, "app": "Slack", "title": "General"}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.tracker.FocusDecisions(d.cfg, snap, time.Now().Add(-time.Minute))
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus mode should run through the native helper")
+	}
+	got := logs.String()
+	if !strings.Contains(got, `"level":"warn"`) ||
+		!strings.Contains(got, "still visible after 1.0s grace") {
+		t.Fatalf("expected still-visible warning, logs:\n%s", got)
 	}
 }
 
@@ -275,6 +470,49 @@ func TestHideAllFallsBackToLegacyWhenWindowTrackingOff(t *testing.T) {
 	}
 	if len(hidden) != 1 || hidden[0] != "Slack" {
 		t.Fatalf("legacy hidden apps = %v, want Slack only", hidden)
+	}
+}
+
+func TestLegacyFocusNeverHidesMissingValues(t *testing.T) {
+	d := testDaemon(t, "")
+	d.cfg.Focus.KeepRecent = 1
+	d.cfg.Focus.Grace = config.Duration{}
+	d.tracker.apps["Slack"] = &AppState{LastActive: time.Now().Add(-time.Minute)}
+	d.getFrontmostApp = func() (string, error) { return "MISSING VALUE", nil }
+	d.getVisibleApps = func() ([]string, error) {
+		return []string{"", "missing value", "Slack"}, nil
+	}
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	d.tickLegacy(d.cfg, true)
+
+	if len(hidden) != 1 || hidden[0] != "Slack" {
+		t.Fatalf("legacy focus hidden apps = %v, want Slack only", hidden)
+	}
+}
+
+func TestHideAllLegacyNeverHidesMissingValues(t *testing.T) {
+	d := testDaemon(t, "")
+	d.getFrontmostApp = func() (string, error) { return "", nil }
+	d.getVisibleApps = func() ([]string, error) {
+		return []string{"missing value", "Slack"}, nil
+	}
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	data, err := d.hideAllLegacy(d.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden) != 1 || hidden[0] != "Slack" || data.Hidden != 1 || data.Failed != 0 {
+		t.Fatalf("hide all = hidden %v, data %+v", hidden, data)
 	}
 }
 

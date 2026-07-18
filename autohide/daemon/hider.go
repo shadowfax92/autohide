@@ -13,7 +13,7 @@ func GetFrontmostApp() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get frontmost app: %w (grant Automation permissions in System Preferences)", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return normalizeLegacyAppName(string(out)), nil
 }
 
 func GetVisibleApps() ([]string, error) {
@@ -30,7 +30,7 @@ func GetVisibleApps() ([]string, error) {
 	parts := strings.Split(raw, ", ")
 	apps := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if name := strings.TrimSpace(p); name != "" {
+		if name := normalizeLegacyAppName(p); name != "" {
 			apps = append(apps, name)
 		}
 	}
@@ -38,6 +38,10 @@ func GetVisibleApps() ([]string, error) {
 }
 
 func HideApp(name string) error {
+	name = normalizeLegacyAppName(name)
+	if name == "" {
+		return nil
+	}
 	escaped := strings.ReplaceAll(name, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	script := fmt.Sprintf(
@@ -48,4 +52,12 @@ func HideApp(name string) error {
 		return fmt.Errorf("hide %q: %w", name, err)
 	}
 	return nil
+}
+
+func normalizeLegacyAppName(name string) string {
+	name = strings.TrimSpace(name)
+	if strings.EqualFold(name, "missing value") {
+		return ""
+	}
+	return name
 }

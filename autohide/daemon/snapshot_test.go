@@ -17,8 +17,8 @@ const fullSnapshotJSON = `{
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
-    {"pid": 100, "name": "Google Chrome", "hidden": false},
-    {"pid": 200, "name": "Slack", "hidden": true}
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 200, "name": "Slack", "hidden": true, "unhidable": "fullscreen"}
   ],
   "windows": [
     {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
@@ -49,13 +49,19 @@ func TestParseSnapshotFull(t *testing.T) {
 	if len(snap.Apps) != 2 || !snap.Apps[1].Hidden {
 		t.Errorf("apps = %+v", snap.Apps)
 	}
+	if snap.Apps[0].Unhidable == nil || *snap.Apps[0].Unhidable != "" {
+		t.Errorf("normal app unhidable = %v, want explicit empty string", snap.Apps[0].Unhidable)
+	}
+	if snap.Apps[1].Unhidable == nil || *snap.Apps[1].Unhidable != "fullscreen" {
+		t.Errorf("fullscreen app unhidable = %v, want fullscreen", snap.Apps[1].Unhidable)
+	}
 	if len(snap.Windows) != 2 || snap.Windows[0].ID != 42 || snap.Windows[1].Title != "" {
 		t.Errorf("windows = %+v", snap.Windows)
 	}
 }
 
 func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
-	snap, err := parseSnapshot([]byte(`{"ax_trusted": false, "apps": [], "windows": []}`))
+	snap, err := parseSnapshot([]byte(`{"ax_trusted": false, "apps": [{"pid": 1, "name": "Old Helper", "hidden": false}], "windows": []}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +73,9 @@ func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
 	}
 	if snap.IdleSeconds != nil {
 		t.Errorf("absent idle_seconds must stay unknown (old helper), got %v", *snap.IdleSeconds)
+	}
+	if snap.Apps[0].Unhidable != nil {
+		t.Errorf("absent unhidable must stay unknown (old helper), got %v", *snap.Apps[0].Unhidable)
 	}
 }
 
@@ -206,6 +215,20 @@ func TestHelperWatchRejectsMalformedEvents(t *testing.T) {
 	h := NewHelper(writeFakeHelper(t, dir, "#!/bin/sh\nprintf '%s\\n' '{not-json'\n"))
 	if err := h.Watch(context.Background(), func(WatchEvent) {}); err == nil || !strings.Contains(err.Error(), "parse watch event") {
 		t.Fatalf("Watch() error = %v, want parse watch event", err)
+	}
+}
+
+func TestHelperHidePropagatesStillVisibleReason(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFakeHelper(t, dir, `#!/bin/sh
+[ "$1" = "hide" ] && [ "$2" = "42" ] || exit 2
+echo 'hide: app pid 42 still visible after 1.0s grace (AXError -25211)' >&2
+exit 1
+`)
+
+	err := NewHelper(path).Hide(42)
+	if err == nil || !strings.Contains(err.Error(), "still visible after 1.0s grace") {
+		t.Fatalf("Hide() error = %v, want still-visible reason", err)
 	}
 }
 

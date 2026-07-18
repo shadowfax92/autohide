@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ func testCfg() *config.Config {
 }
 
 func at(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+
+func stringPtr(value string) *string { return &value }
 
 func chromeApp() SnapApp   { return SnapApp{Pid: 100, Name: "Google Chrome"} }
 func terminalApp() SnapApp { return SnapApp{Pid: 200, Name: "Terminal"} }
@@ -63,13 +66,149 @@ func windowLastActive(infos []AppInfo, id uint32) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func appLastActive(infos []AppInfo, name string) (time.Time, bool) {
+func findAppLastActive(infos []AppInfo, name string) (time.Time, bool) {
 	for _, info := range infos {
 		if info.Name == name {
 			return info.LastActive, true
 		}
 	}
 	return time.Time{}, false
+}
+
+func TestRecentAppsTracksFrontmostOrderAndPrunesStoppedApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	chrome := chromeApp()
+	terminal := terminalApp()
+	slack := SnapApp{Pid: 300, Name: "Slack"}
+	apps := []SnapApp{chrome, terminal, slack}
+	wins := []SnapWindow{
+		win(1, chrome.Pid, chrome.Name),
+		win(10, terminal.Pid, terminal.Name),
+		win(30, slack.Pid, slack.Name),
+	}
+
+	tr.Update(cfg, snap(chrome, 1, apps, wins), at(0))
+	tr.Update(cfg, snap(terminal, 10, apps, wins), at(1))
+	tr.Update(cfg, snap(slack, 30, apps, wins), at(2))
+	tr.Update(cfg, snap(terminal, 10, apps, wins), at(3))
+
+	want := []string{"Terminal", "Slack", "Google Chrome"}
+	if got := tr.RecentApps(3); !equalStrings(got, want) {
+		t.Fatalf("RecentApps(3) = %v, want %v", got, want)
+	}
+
+	running := []SnapApp{chrome, slack}
+	runningWins := []SnapWindow{wins[0], wins[2]}
+	tr.Update(cfg, snap(slack, 30, running, runningWins), at(4))
+	want = []string{"Slack", "Google Chrome"}
+	if got := tr.RecentApps(3); !equalStrings(got, want) {
+		t.Fatalf("RecentApps(3) after prune = %v, want %v", got, want)
+	}
+}
+
+func TestFocusDecisionsKeepsRecentWorkingSet(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 3
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
+	chrome := chromeApp()
+	terminal := terminalApp()
+	slack := SnapApp{Pid: 300, Name: "Slack"}
+	music := SnapApp{Pid: 400, Name: "Music"}
+	apps := []SnapApp{chrome, terminal, slack, music}
+	wins := []SnapWindow{
+		win(1, chrome.Pid, chrome.Name),
+		win(10, terminal.Pid, terminal.Name),
+		win(30, slack.Pid, slack.Name),
+		win(40, music.Pid, music.Name),
+	}
+
+	tr.FocusDecisions(cfg, snap(chrome, 1, apps, wins), at(0))
+	tr.FocusDecisions(cfg, snap(terminal, 10, apps, wins), at(1))
+	tr.FocusDecisions(cfg, snap(slack, 30, apps, wins), at(2))
+	dec := tr.FocusDecisions(cfg, snap(slack, 30, apps, wins), at(12))
+
+	for _, name := range []string{chrome.Name, terminal.Name, slack.Name} {
+		if hasApp(dec.HideApps, name) {
+			t.Errorf("recent app %s should stay visible", name)
+		}
+	}
+	if !hasApp(dec.HideApps, music.Name) {
+		t.Error("Music should hide after remaining outside the keep-set past grace")
+	}
+}
+
+func TestFocusDecisionsWaitsPastGraceBoundary(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 1
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	if dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(10)); hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("Chrome should remain visible at the grace boundary")
+	}
+	if dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(11)); !hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("Chrome should hide after the grace boundary")
+	}
+}
+
+func TestFocusDecisionsSkipsIneligibleApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 1
+	cfg.Focus.Grace = config.Duration{Duration: time.Second}
+	hidden := SnapApp{Pid: 300, Name: "Hidden", Hidden: true}
+	noHide := SnapApp{Pid: 400, Name: "NoHide"}
+	windowless := SnapApp{Pid: 500, Name: "Windowless"}
+	apps := []SnapApp{terminalApp(), hidden, noHide, windowless}
+	wins := []SnapWindow{
+		win(10, 200, "Terminal"),
+		win(30, hidden.Pid, hidden.Name),
+		win(40, noHide.Pid, noHide.Name),
+	}
+
+	tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(2))
+	for _, name := range []string{hidden.Name, noHide.Name, windowless.Name} {
+		if hasApp(dec.HideApps, name) {
+			t.Errorf("ineligible app %s should not hide", name)
+		}
+	}
+}
+
+func TestFocusDecisionsColdEntryDoesNotHideApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 3
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
+	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
+	wins := []SnapWindow{
+		win(1, 100, "Google Chrome"),
+		win(10, 200, "Terminal"),
+		win(30, 300, "Slack"),
+		win(40, 400, "Music"),
+	}
+
+	dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(100))
+	if len(dec.HideApps) != 0 {
+		t.Fatalf("cold focus entry should not hide apps, got %+v", dec.HideApps)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // --- App-hide tier ---
@@ -170,7 +309,7 @@ func TestEventTouchBetweenTicksPreventsEarlyHide(t *testing.T) {
 	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70)); hasApp(dec.HideApps, "Google Chrome") {
 		t.Fatal("an app touched between polls must get a full timeout from the event")
 	}
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(55)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(55)) {
 		t.Fatalf("event touch = %v, want t+55s", got)
 	}
 	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(116)); !hasApp(dec.HideApps, "Google Chrome") {
@@ -186,7 +325,7 @@ func TestOlderEventCannotMoveLastActiveBackward(t *testing.T) {
 
 	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(50))
 	tr.TouchApp("Google Chrome", at(40))
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(50)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(50)) {
 		t.Fatalf("late event moved LastActive backward to %v", got)
 	}
 }
@@ -200,7 +339,7 @@ func TestSnapshotCannotMoveEventTimestampBackward(t *testing.T) {
 	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
 	tr.ActivateApp(100, "Google Chrome", at(75))
 	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(75)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(75)) {
 		t.Fatalf("snapshot regressed event timestamp to %v", got)
 	}
 }
@@ -213,7 +352,7 @@ func TestLegacyPollCannotMoveEventTimestampBackward(t *testing.T) {
 	tr.UpdateLegacy(cfg, "Terminal", visible, at(0))
 	tr.ActivateApp(200, "Terminal", at(75))
 	tr.UpdateLegacy(cfg, "Terminal", visible, at(70))
-	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
 		t.Fatalf("legacy poll regressed event timestamp to %v", got)
 	}
 }
@@ -255,7 +394,7 @@ func TestPreSnapshotActivationSeedsOverlayFallback(t *testing.T) {
 	if hasApp(dec.HideApps, "Terminal") {
 		t.Fatal("the validated pre-snapshot activation must remain the overlay fallback")
 	}
-	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
 		t.Fatalf("pre-snapshot fallback lease = %v, want t+75s", got)
 	}
 }
@@ -276,7 +415,7 @@ func TestNewerActivationWinsOverSnapshotFrontmost(t *testing.T) {
 	}
 	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
 	tr.Update(cfg, overlay, at(70))
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
 		t.Fatalf("newer event fallback lease = %v, want t+70s", got)
 	}
 }
@@ -321,7 +460,7 @@ func TestShiftLastActiveFreezesAppAndWindowAging(t *testing.T) {
 
 	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
 	tr.ShiftLastActive(2 * time.Minute)
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(120)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(120)) {
 		t.Fatalf("shifted app lease = %v, want t+120s", got)
 	}
 	if got, _ := windowLastActive(tr.List(cfg), 1); !got.Equal(at(120)) {
@@ -347,7 +486,7 @@ func TestUnresolvedFrontmostRefreshesLastRegularApp(t *testing.T) {
 	if hasApp(dec.HideApps, "Terminal") {
 		t.Fatal("the regular app beneath an accessory overlay must stay exempt")
 	}
-	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(70)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(70)) {
 		t.Fatalf("underlying app lease = %v, want t+70s", got)
 	}
 }
@@ -365,7 +504,7 @@ func TestActivationEventUpdatesOverlayFallback(t *testing.T) {
 	if hasApp(dec.HideApps, "Google Chrome") {
 		t.Fatal("the latest regular activation must become the overlay fallback")
 	}
-	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
+	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
 		t.Fatalf("event-selected fallback lease = %v, want t+70s", got)
 	}
 }
@@ -519,6 +658,39 @@ func TestHideRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestUnhidableAppSkipsWithoutBackoffAndRecovers(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	slack := SnapApp{Pid: 300, Name: "Slack", Unhidable: stringPtr("fullscreen")}
+	apps := []SnapApp{terminalApp(), slack}
+	wins := []SnapWindow{win(10, 200, "Terminal"), win(30, 300, "Slack")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70))
+	if hasApp(dec.HideApps, "Slack") {
+		t.Fatal("fullscreen Slack must not be scheduled for hiding")
+	}
+	state := tr.apps["Slack"]
+	if state.Hidden || !state.DeferUntil.IsZero() {
+		t.Fatalf("unhidable skip mutated hide state: %+v", state)
+	}
+	infos := tr.List(cfg)
+	if len(infos) != 2 {
+		t.Fatalf("tracked apps = %+v", infos)
+	}
+	for _, info := range infos {
+		if info.Name == "Slack" && info.Unhidable != "fullscreen" {
+			t.Fatalf("Slack list reason = %q, want fullscreen", info.Unhidable)
+		}
+	}
+
+	slack.Unhidable = stringPtr("")
+	dec = tr.Update(cfg, snap(terminalApp(), 10, []SnapApp{terminalApp(), slack}, wins), at(71))
+	if !hasApp(dec.HideApps, "Slack") {
+		t.Fatal("Slack should become eligible immediately after leaving fullscreen")
+	}
+}
+
 // --- Window tracking (drives `autohide list`) ---
 
 func TestListReportsWindows(t *testing.T) {
@@ -647,5 +819,37 @@ func TestUpdateLegacy(t *testing.T) {
 	// Hidden apps are not re-decided while not visible.
 	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "NoHide"}, at(140)); len(toHide) != 0 {
 		t.Errorf("nothing left to hide, got %v", toHide)
+	}
+}
+
+func TestUpdateLegacyIgnoresMissingFrontmost(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+
+	if toHide := tr.UpdateLegacy(cfg, "Terminal", []string{"Terminal", "Slack"}, at(0)); len(toHide) != 0 {
+		t.Fatalf("first tick quiet, got %v", toHide)
+	}
+	toHide := tr.UpdateLegacy(cfg, "missing value", []string{"Slack", "missing value", ""}, at(70))
+	if len(toHide) != 1 || toHide[0] != "Slack" {
+		t.Fatalf("missing frontmost should not refresh or hide itself, got %v", toHide)
+	}
+
+	for _, app := range tr.List(cfg) {
+		if app.Name == "" || strings.EqualFold(app.Name, "missing value") {
+			t.Fatalf("invalid legacy app was tracked: %q", app.Name)
+		}
+	}
+}
+
+func TestUpdateLegacyEmptyFrontmostDoesNotRefresh(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+
+	tr.UpdateLegacy(cfg, "Slack", []string{"Slack"}, at(0))
+	tr.UpdateLegacy(cfg, "", []string{"Slack"}, at(30))
+
+	apps := tr.List(cfg)
+	if len(apps) != 1 || apps[0].Name != "Slack" || !apps[0].LastActive.Equal(at(0)) {
+		t.Fatalf("empty frontmost refreshed tracker: %+v", apps)
 	}
 }

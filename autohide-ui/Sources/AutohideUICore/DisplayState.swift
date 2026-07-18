@@ -19,7 +19,7 @@ public struct TrackingDisplay: Equatable {
 public func trackingDisplay(_ raw: String?) -> TrackingDisplay {
     switch raw {
     case "active":
-        return TrackingDisplay(label: "Per-window", severity: .ok)
+        return TrackingDisplay(label: "App-level — window-aware", severity: .ok)
     case "app-only: accessibility not granted":
         return TrackingDisplay(label: "App-only — grant Accessibility", severity: .warn)
     case "off":
