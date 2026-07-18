@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"autohide/config"
@@ -43,7 +44,7 @@ var configEditCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a global config value",
-	Long:  "Keys: default_timeout, check_interval",
+	Long:  "Keys: default_timeout, check_interval, focus.keep_recent, focus.grace",
 	Args:  cobra.ExactArgs(2),
 	RunE:  runConfigSet,
 }
@@ -142,8 +143,20 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid duration: %w", err)
 		}
 		cfg.General.CheckInterval = config.Duration{Duration: d}
+	case "focus.keep_recent":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid keep_recent: %s (must be at least 1)", value)
+		}
+		cfg.Focus.KeepRecent = n
+	case "focus.grace":
+		d, err := time.ParseDuration(value)
+		if err != nil || d < 0 {
+			return fmt.Errorf("invalid grace: %s (must be a non-negative duration)", value)
+		}
+		cfg.Focus.Grace = config.Duration{Duration: d}
 	default:
-		return fmt.Errorf("unknown key: %s (valid: default_timeout, check_interval)", key)
+		return fmt.Errorf("unknown key: %s (valid: default_timeout, check_interval, focus.keep_recent, focus.grace)", key)
 	}
 
 	if err := config.Save(cfg, p); err != nil {

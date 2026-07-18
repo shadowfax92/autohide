@@ -282,14 +282,8 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		// screen; drop them so leaving focus mode re-leases instead of
 		// showing every window as long idle.
 		d.tracker.ResetWindows()
-		// Focus mode: hide everything except frontmost immediately
-		for _, app := range snap.Apps {
-			if app.Hidden || app.Name == snap.Frontmost.Name {
-				continue
-			}
-			if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
-				continue
-			}
+		dec := d.tracker.FocusDecisions(cfg, snap, now)
+		for _, app := range dec.HideApps {
 			d.logger.Debug().Str("app", app.Name).Msg("focus mode: hiding app")
 			if err := d.helper.Hide(app.Pid); err != nil {
 				d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
@@ -453,18 +447,11 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 	}
 
 	if focusMode {
-		for _, rawName := range visible {
-			name := normalizeLegacyAppName(rawName)
-			if name == "" || name == frontmost {
-				continue
-			}
-			_, disabled := cfg.EffectiveTimeout(name)
-			if disabled {
-				continue
-			}
-			d.logger.Debug().Str("app", name).Msg("focus mode: hiding app")
-			if err := d.hideApp(name); err != nil {
-				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
+		dec := d.tracker.FocusDecisions(cfg, legacyFocusSnapshot(frontmost, visible), time.Now())
+		for _, app := range dec.HideApps {
+			d.logger.Debug().Str("app", app.Name).Msg("focus mode: hiding app")
+			if err := d.hideApp(app.Name); err != nil {
+				d.logger.Warn().Err(err).Str("app", app.Name).Msg("failed to hide app")
 			}
 		}
 	} else {
@@ -475,6 +462,31 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 				d.logger.Warn().Err(err).Str("app", name).Msg("failed to hide app")
 			}
 		}
+	}
+}
+
+// legacyFocusSnapshot adapts app polling to the shared focus policy.
+func legacyFocusSnapshot(frontmost string, visible []string) *Snapshot {
+	seen := make(map[string]bool, len(visible)+1)
+	apps := make([]SnapApp, 0, len(visible)+1)
+	windows := make([]SnapWindow, 0, len(visible)+1)
+	add := func(name string) {
+		name = normalizeLegacyAppName(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		apps = append(apps, SnapApp{Name: name})
+		windows = append(windows, SnapWindow{ID: uint32(len(windows) + 1), App: name})
+	}
+	add(frontmost)
+	for _, name := range visible {
+		add(name)
+	}
+	return &Snapshot{
+		Frontmost: AppRef{Name: frontmost},
+		Apps:      apps,
+		Windows:   windows,
 	}
 }
 

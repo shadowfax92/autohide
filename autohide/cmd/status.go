@@ -48,6 +48,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	focus := "off"
 	if data.FocusMode {
 		focus = "on"
+		if data.FocusKeepRecent > 0 {
+			focus = fmt.Sprintf("on (keeping %d recent)", data.FocusKeepRecent)
+		}
 	}
 
 	fmt.Printf("Status:    running\n")

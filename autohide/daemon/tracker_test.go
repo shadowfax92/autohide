@@ -64,6 +64,142 @@ func windowLastActive(infos []AppInfo, id uint32) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func TestRecentAppsTracksFrontmostOrderAndPrunesStoppedApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	chrome := chromeApp()
+	terminal := terminalApp()
+	slack := SnapApp{Pid: 300, Name: "Slack"}
+	apps := []SnapApp{chrome, terminal, slack}
+	wins := []SnapWindow{
+		win(1, chrome.Pid, chrome.Name),
+		win(10, terminal.Pid, terminal.Name),
+		win(30, slack.Pid, slack.Name),
+	}
+
+	tr.Update(cfg, snap(chrome, 1, apps, wins), at(0))
+	tr.Update(cfg, snap(terminal, 10, apps, wins), at(1))
+	tr.Update(cfg, snap(slack, 30, apps, wins), at(2))
+	tr.Update(cfg, snap(terminal, 10, apps, wins), at(3))
+
+	want := []string{"Terminal", "Slack", "Google Chrome"}
+	if got := tr.RecentApps(3); !equalStrings(got, want) {
+		t.Fatalf("RecentApps(3) = %v, want %v", got, want)
+	}
+
+	running := []SnapApp{chrome, slack}
+	runningWins := []SnapWindow{wins[0], wins[2]}
+	tr.Update(cfg, snap(slack, 30, running, runningWins), at(4))
+	want = []string{"Slack", "Google Chrome"}
+	if got := tr.RecentApps(3); !equalStrings(got, want) {
+		t.Fatalf("RecentApps(3) after prune = %v, want %v", got, want)
+	}
+}
+
+func TestFocusDecisionsKeepsRecentWorkingSet(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 3
+	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	chrome := chromeApp()
+	terminal := terminalApp()
+	slack := SnapApp{Pid: 300, Name: "Slack"}
+	music := SnapApp{Pid: 400, Name: "Music"}
+	apps := []SnapApp{chrome, terminal, slack, music}
+	wins := []SnapWindow{
+		win(1, chrome.Pid, chrome.Name),
+		win(10, terminal.Pid, terminal.Name),
+		win(30, slack.Pid, slack.Name),
+		win(40, music.Pid, music.Name),
+	}
+
+	tr.FocusDecisions(cfg, snap(chrome, 1, apps, wins), at(0))
+	tr.FocusDecisions(cfg, snap(terminal, 10, apps, wins), at(1))
+	tr.FocusDecisions(cfg, snap(slack, 30, apps, wins), at(2))
+	dec := tr.FocusDecisions(cfg, snap(slack, 30, apps, wins), at(12))
+
+	for _, name := range []string{chrome.Name, terminal.Name, slack.Name} {
+		if hasApp(dec.HideApps, name) {
+			t.Errorf("recent app %s should stay visible", name)
+		}
+	}
+	if !hasApp(dec.HideApps, music.Name) {
+		t.Error("Music should hide after remaining outside the keep-set past grace")
+	}
+}
+
+func TestFocusDecisionsWaitsPastGraceBoundary(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 1
+	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	if dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(10)); hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("Chrome should remain visible at the grace boundary")
+	}
+	if dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(11)); !hasApp(dec.HideApps, "Google Chrome") {
+		t.Error("Chrome should hide after the grace boundary")
+	}
+}
+
+func TestFocusDecisionsSkipsIneligibleApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 1
+	cfg.Focus.Grace = config.Duration{time.Second}
+	hidden := SnapApp{Pid: 300, Name: "Hidden", Hidden: true}
+	noHide := SnapApp{Pid: 400, Name: "NoHide"}
+	windowless := SnapApp{Pid: 500, Name: "Windowless"}
+	apps := []SnapApp{terminalApp(), hidden, noHide, windowless}
+	wins := []SnapWindow{
+		win(10, 200, "Terminal"),
+		win(30, hidden.Pid, hidden.Name),
+		win(40, noHide.Pid, noHide.Name),
+	}
+
+	tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(2))
+	for _, name := range []string{hidden.Name, noHide.Name, windowless.Name} {
+		if hasApp(dec.HideApps, name) {
+			t.Errorf("ineligible app %s should not hide", name)
+		}
+	}
+}
+
+func TestFocusDecisionsColdEntryDoesNotHideApps(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.Focus.KeepRecent = 3
+	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
+	wins := []SnapWindow{
+		win(1, 100, "Google Chrome"),
+		win(10, 200, "Terminal"),
+		win(30, 300, "Slack"),
+		win(40, 400, "Music"),
+	}
+
+	dec := tr.FocusDecisions(cfg, snap(terminalApp(), 10, apps, wins), at(100))
+	if len(dec.HideApps) != 0 {
+		t.Fatalf("cold focus entry should not hide apps, got %+v", dec.HideApps)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // --- App-hide tier ---
 
 // A stale background app hides once its timeout passes; the frontmost app is

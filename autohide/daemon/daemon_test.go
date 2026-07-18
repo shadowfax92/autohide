@@ -68,6 +68,90 @@ const hideAllSnapshotJSON = `{
   ]
 }`
 
+const focusSnapshotJSON = `{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false},
+    {"pid": 200, "name": "Terminal", "hidden": false},
+    {"pid": 300, "name": "Slack", "hidden": false},
+    {"pid": 400, "name": "Music", "hidden": false}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 200, "app": "Terminal", "title": "Shell"},
+    {"id": 44, "pid": 300, "app": "Slack", "title": "General"},
+    {"id": 45, "pid": 400, "app": "Music", "title": "Player"}
+  ]
+}`
+
+func TestFocusTickNativeHidesOnlyOutsideRecentSet(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/hide.log"
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+%s
+JSON
+;;
+hide)
+printf '%%s\n' "$2" >> %q
+;;
+esac
+`, focusSnapshotJSON, logPath)
+	d := testDaemon(t, script)
+	d.cfg.Focus.KeepRecent = 3
+	d.cfg.Focus.Grace = config.Duration{}
+
+	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
+	wins := []SnapWindow{
+		win(42, 100, "Google Chrome"),
+		win(43, 200, "Terminal"),
+		win(44, 300, "Slack"),
+		win(45, 400, "Music"),
+	}
+	past := time.Now().Add(-time.Second)
+	d.tracker.FocusDecisions(d.cfg, snap(terminalApp(), 43, apps, wins), past)
+	d.tracker.FocusDecisions(d.cfg, snap(apps[2], 44, apps, wins), past)
+	d.tracker.FocusDecisions(d.cfg, snap(chromeApp(), 42, apps, wins), past)
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus tick should run natively")
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(raw)); len(got) != 1 || got[0] != "400" {
+		t.Fatalf("helper hide pids = %v, want only Music pid 400", got)
+	}
+}
+
+func TestFocusTickLegacyHidesOnlyOutsideRecentSet(t *testing.T) {
+	d := testDaemon(t, "")
+	d.cfg.Focus.KeepRecent = 3
+	d.cfg.Focus.Grace = config.Duration{}
+	visible := []string{"Google Chrome", "Terminal", "Slack", "Music"}
+	past := time.Now().Add(-time.Second)
+	d.tracker.UpdateLegacy(d.cfg, "Terminal", visible, past)
+	d.tracker.UpdateLegacy(d.cfg, "Slack", visible, past)
+	d.tracker.UpdateLegacy(d.cfg, "Google Chrome", visible, past)
+	d.getFrontmostApp = func() (string, error) { return "Google Chrome", nil }
+	d.getVisibleApps = func() ([]string, error) { return visible, nil }
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	d.tickLegacy(d.cfg, true)
+	if len(hidden) != 1 || hidden[0] != "Music" {
+		t.Fatalf("legacy hidden apps = %v, want Music only", hidden)
+	}
+}
+
 func TestHideAllNativeSkipsIneligibleAppsAndCountsFailures(t *testing.T) {
 	dir := t.TempDir()
 	logPath := dir + "/hide.log"
@@ -139,6 +223,9 @@ func TestHideAllFallsBackToLegacyWhenWindowTrackingOff(t *testing.T) {
 
 func TestLegacyFocusNeverHidesMissingValues(t *testing.T) {
 	d := testDaemon(t, "")
+	d.cfg.Focus.KeepRecent = 1
+	d.cfg.Focus.Grace = config.Duration{}
+	d.tracker.apps["Slack"] = &AppState{LastActive: time.Now().Add(-time.Minute)}
 	d.getFrontmostApp = func() (string, error) { return "MISSING VALUE", nil }
 	d.getVisibleApps = func() ([]string, error) {
 		return []string{"", "missing value", "Slack"}, nil

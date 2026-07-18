@@ -83,7 +83,7 @@ func menuItems() []menuet.MenuItem {
 			}
 		}
 	} else if focusMode {
-		statusText = fmt.Sprintf("Focus Mode  (%d apps tracked)", tracked)
+		statusText = fmt.Sprintf("Focus Mode  (top %d)", cfg.Focus.KeepRecent)
 	}
 	items = append(items, menuet.MenuItem{Text: statusText})
 	items = append(items, menuet.MenuItem{Type: menuet.Separator})
@@ -108,7 +108,7 @@ func menuItems() []menuet.MenuItem {
 
 	focusText := "Focus Mode: Off"
 	if focusMode {
-		focusText = "Focus Mode: On"
+		focusText = fmt.Sprintf("Focus Mode: On (top %d)", cfg.Focus.KeepRecent)
 	}
 	items = append(items, menuet.MenuItem{
 		Text:  focusText,

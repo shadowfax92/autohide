@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"autohide/config"
 	"autohide/ipc"
@@ -12,7 +13,7 @@ import (
 
 var focusCmd = &cobra.Command{
 	Use:   "focus",
-	Short: "Manage focus mode (instantly hide all apps except frontmost)",
+	Short: "Manage focus mode (keep recent apps visible)",
 }
 
 var focusOnCmd = &cobra.Command{
@@ -40,7 +41,9 @@ func init() {
 	rootCmd.AddCommand(focusCmd)
 }
 
-func sendFocusCmd(command string) (*ipc.FocusModeData, error) {
+var sendFocusCmd = sendFocusRequest
+
+func sendFocusRequest(command string) (*ipc.FocusModeData, error) {
 	if err := ensureDaemon(); err != nil {
 		return nil, err
 	}
@@ -53,9 +56,14 @@ func sendFocusCmd(command string) (*ipc.FocusModeData, error) {
 		return nil, fmt.Errorf("daemon: %s", resp.Error)
 	}
 
-	raw, _ := json.Marshal(resp.Data)
+	raw, err := json.Marshal(resp.Data)
+	if err != nil {
+		return nil, err
+	}
 	var data ipc.FocusModeData
-	json.Unmarshal(raw, &data)
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
 	return &data, nil
 }
 
@@ -65,7 +73,8 @@ func runFocusOn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if data.Active {
-		fmt.Println("Focus mode enabled. Only the frontmost app stays visible.")
+		cmd.Printf("Focus mode enabled. Keeping %d recent %s visible; others hide after %s.\n",
+			data.KeepRecent, plural("app", data.KeepRecent), data.Grace)
 	}
 	return nil
 }
@@ -76,7 +85,7 @@ func runFocusOff(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !data.Active {
-		fmt.Println("Focus mode disabled. Resuming timeout-based hiding.")
+		cmd.Println("Focus mode disabled. Resuming timeout-based hiding.")
 	}
 	return nil
 }
@@ -87,9 +96,16 @@ func runFocusStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if data.Active {
-		fmt.Println("Focus mode: on")
+		cmd.Println("Focus mode: on")
 	} else {
-		fmt.Println("Focus mode: off")
+		cmd.Println("Focus mode: off")
 	}
+	cmd.Printf("Keep recent: %d %s\n", data.KeepRecent, plural("app", data.KeepRecent))
+	cmd.Printf("Grace: %s\n", data.Grace)
+	keepSet := "(none yet)"
+	if len(data.KeepSet) > 0 {
+		keepSet = strings.Join(data.KeepSet, ", ")
+	}
+	cmd.Printf("Keep set: %s\n", keepSet)
 	return nil
 }
