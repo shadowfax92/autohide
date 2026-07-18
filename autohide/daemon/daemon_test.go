@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -55,16 +56,18 @@ const hideAllSnapshotJSON = `{
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
-    {"pid": 100, "name": "Google Chrome", "hidden": false},
-    {"pid": 200, "name": "NoHide", "hidden": false},
-    {"pid": 300, "name": "Slack", "hidden": false},
-    {"pid": 400, "name": "Mail", "hidden": false},
-    {"pid": 500, "name": "Zoom", "hidden": true}
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 200, "name": "NoHide", "hidden": false, "unhidable": ""},
+    {"pid": 300, "name": "Slack", "hidden": false, "unhidable": ""},
+    {"pid": 400, "name": "Mail", "hidden": false, "unhidable": "fullscreen"},
+    {"pid": 500, "name": "Zoom", "hidden": true, "unhidable": ""},
+    {"pid": 600, "name": "Calendar", "hidden": false, "unhidable": ""}
   ],
   "windows": [
     {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
     {"id": 43, "pid": 300, "app": "Slack", "title": "General"},
-    {"id": 44, "pid": 400, "app": "Mail", "title": "Inbox"}
+    {"id": 44, "pid": 400, "app": "Mail", "title": "Inbox"},
+    {"id": 45, "pid": 600, "app": "Calendar", "title": "Week"}
   ]
 }`
 
@@ -79,7 +82,7 @@ cat <<'JSON'
 JSON
 ;;
 hide)
-if [ "$2" = "400" ]; then
+if [ "$2" = "600" ]; then
   exit 1
 fi
 printf '%%s\n' "$2" >> %q
@@ -107,7 +110,79 @@ esac
 	}
 	got := strings.Fields(string(raw))
 	if len(got) != 1 || got[0] != "300" {
-		t.Fatalf("helper hide pids = %v, want only Slack pid 300", got)
+		t.Fatalf("helper hide pids = %v, want only Slack pid 300 (Mail skipped, Calendar failed)", got)
+	}
+}
+
+func TestFocusModeSkipsUnhidableApps(t *testing.T) {
+	dir := t.TempDir()
+	logPath := dir + "/hide.log"
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+%s
+JSON
+;;
+hide)
+printf '%%s\n' "$2" >> %q
+;;
+esac
+`, hideAllSnapshotJSON, logPath)
+	d := testDaemon(t, script)
+	d.cfg.Apps["NoHide"] = config.AppConfig{Disabled: true}
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus mode should run through the native helper")
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(raw))
+	want := []string{"300", "600"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("focus-mode helper pids = %v, want %v", got, want)
+	}
+}
+
+func TestFocusModeLogsStillVisibleAsWarning(t *testing.T) {
+	script := `#!/bin/sh
+case "$1" in
+snapshot)
+cat <<'JSON'
+{
+  "ax_trusted": true,
+  "frontmost": {"pid": 100, "name": "Google Chrome"},
+  "focused_window_id": 42,
+  "apps": [
+    {"pid": 100, "name": "Google Chrome", "hidden": false, "unhidable": ""},
+    {"pid": 300, "name": "Slack", "hidden": false, "unhidable": ""}
+  ],
+  "windows": [
+    {"id": 42, "pid": 100, "app": "Google Chrome", "title": "Docs"},
+    {"id": 43, "pid": 300, "app": "Slack", "title": "General"}
+  ]
+}
+JSON
+;;
+hide)
+echo 'hide: app pid 300 still visible after 1.0s grace (AXError -25211)' >&2
+exit 1
+;;
+esac
+`
+	var logs bytes.Buffer
+	d := New(config.Default(), "", zerolog.New(&logs))
+	d.helper = NewHelper(writeFakeHelper(t, t.TempDir(), script))
+
+	if !d.tickNative(d.cfg, true) {
+		t.Fatal("focus mode should run through the native helper")
+	}
+	got := logs.String()
+	if !strings.Contains(got, `"level":"warn"`) ||
+		!strings.Contains(got, "still visible after 1.0s grace") {
+		t.Fatalf("expected still-visible warning, logs:\n%s", got)
 	}
 }
 

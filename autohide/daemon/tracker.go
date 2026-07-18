@@ -8,15 +8,15 @@ import (
 	"autohide/config"
 )
 
-// An ineffective hide (e.g. a Split View member: the request is accepted but
-// nothing hides) would otherwise be re-decided every tick via the reality
-// mirror.
+// An accepted hide that remains ineffective for an unknown reason would
+// otherwise be re-decided every tick via the reality mirror.
 const hideRetryBackoff = 5 * time.Minute
 
 type AppState struct {
 	Pid        int32
 	LastActive time.Time
 	Hidden     bool
+	Unhidable  string
 	DeferUntil time.Time
 }
 
@@ -38,6 +38,7 @@ type AppInfo struct {
 	LastActive time.Time
 	Timeout    time.Duration
 	Hidden     bool
+	Unhidable  string
 	Disabled   bool
 	Windows    []WindowDetail
 }
@@ -116,6 +117,10 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			t.apps[a.Name] = entry
 		}
 		entry.Pid = a.Pid
+		entry.Unhidable = ""
+		if a.Unhidable != nil {
+			entry.Unhidable = *a.Unhidable
+		}
 		// Mirror reality: a failed hide self-heals (still visible next tick
 		// -> re-decided), a user unhide is seen without polling extra state.
 		entry.Hidden = a.Hidden
@@ -141,7 +146,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	for name, entry := range t.apps {
 		// Zero-window apps: hiding them is invisible and re-hide loops
 		// after unhide; skip.
-		if name == snap.Frontmost.Name || entry.Hidden || winsByApp[name] == 0 {
+		if name == snap.Frontmost.Name || entry.Hidden || entry.Unhidable != "" || winsByApp[name] == 0 {
 			continue
 		}
 		if now.Before(entry.DeferUntil) {
@@ -252,6 +257,7 @@ func (t *Tracker) List(cfg *config.Config) []AppInfo {
 			LastActive: state.LastActive,
 			Timeout:    timeout,
 			Hidden:     state.Hidden,
+			Unhidable:  state.Unhidable,
 			Disabled:   disabled,
 			Windows:    windows,
 		})

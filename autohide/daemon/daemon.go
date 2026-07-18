@@ -271,7 +271,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.tracker.ResetWindows()
 		// Focus mode: hide everything except frontmost immediately
 		for _, app := range snap.Apps {
-			if app.Hidden || app.Name == snap.Frontmost.Name {
+			if app.Hidden || app.Name == snap.Frontmost.Name || app.isUnhidable() {
 				continue
 			}
 			if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
@@ -362,7 +362,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 
 	var data ipc.HideAllData
 	for _, app := range snap.Apps {
-		if app.Hidden || app.Name == snap.Frontmost.Name {
+		if app.Hidden || app.Name == snap.Frontmost.Name || app.isUnhidable() {
 			continue
 		}
 		if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {

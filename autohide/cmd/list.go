@@ -3,7 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"text/tabwriter"
 	"time"
 
@@ -47,15 +47,19 @@ func runList(cmd *cobra.Command, args []string) error {
 	var data ipc.ListData
 	json.Unmarshal(raw, &data)
 
+	writeList(cmd.OutOrStdout(), data, time.Now())
+	return nil
+}
+
+// writeList writes the tracked-app table, including reasons that prevent app-level hiding.
+func writeList(out io.Writer, data ipc.ListData, now time.Time) {
 	if len(data.Apps) == 0 {
-		fmt.Println("No apps tracked yet.")
-		return nil
+		fmt.Fprintln(out, "No apps tracked yet.")
+		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "APP\tTIMEOUT\tLAST ACTIVE\tHIDDEN\tREMAINING\tWINDOWS")
-
-	now := time.Now()
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "APP\tTIMEOUT\tLAST ACTIVE\tHIDDEN\tREMAINING\tWINDOWS\tSTATUS")
 	for _, app := range data.Apps {
 		timeout := app.Timeout
 		if app.Disabled {
@@ -68,12 +72,17 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		remaining := app.TimeRemaining
-		if app.Disabled || app.Hidden {
+		if app.Disabled || app.Hidden || app.Unhidable != "" {
 			remaining = "-"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-			app.Name, timeout, agoString(now, app.LastActive), hidden, remaining, app.WindowCount)
+		status := "-"
+		if app.Unhidable != "" {
+			status = "unhidable: " + app.Unhidable
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			app.Name, timeout, agoString(now, app.LastActive), hidden, remaining, app.WindowCount, status)
 
 		for _, win := range app.Windows {
 			title := win.Title
@@ -83,12 +92,11 @@ func runList(cmd *cobra.Command, args []string) error {
 			if runes := []rune(title); len(runes) > 40 {
 				title = string(runes[:37]) + "..."
 			}
-			fmt.Fprintf(w, "  · %s\t\t%s\t\t\t\n", title, agoString(now, win.LastActive))
+			fmt.Fprintf(w, "  · %s\t\t%s\t\t\t\t\n", title, agoString(now, win.LastActive))
 		}
 	}
 
 	w.Flush()
-	return nil
 }
 
 func agoString(now time.Time, rfc3339 string) string {

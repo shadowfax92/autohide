@@ -37,6 +37,7 @@ type AppInfo struct {
 	LastActive    string       `json:"last_active"`
 	Timeout       string       `json:"timeout"`
 	Hidden        bool         `json:"hidden"`
+	Unhidable     string       `json:"unhidable,omitempty"`
 	TimeRemaining string       `json:"time_remaining"`
 	Disabled      bool         `json:"disabled"`
 	WindowCount   int          `json:"window_count"`

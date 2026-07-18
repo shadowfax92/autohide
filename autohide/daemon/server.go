@@ -278,7 +278,7 @@ func (s *Server) handleList(req ipc.Request) ipc.Response {
 	apps := make([]ipc.AppInfo, 0, len(tracked))
 	for _, a := range tracked {
 		remaining := a.Timeout - now.Sub(a.LastActive)
-		if remaining < 0 || a.Hidden || a.Disabled {
+		if remaining < 0 || a.Hidden || a.Disabled || a.Unhidable != "" {
 			remaining = 0
 		}
 		info := ipc.AppInfo{
@@ -286,6 +286,7 @@ func (s *Server) handleList(req ipc.Request) ipc.Response {
 			LastActive:    a.LastActive.Format(time.RFC3339),
 			Timeout:       a.Timeout.String(),
 			Hidden:        a.Hidden,
+			Unhidable:     a.Unhidable,
 			TimeRemaining: remaining.Round(time.Second).String(),
 			Disabled:      a.Disabled,
 			WindowCount:   len(a.Windows),
