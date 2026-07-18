@@ -46,7 +46,7 @@ type Tracker struct {
 	mu            sync.RWMutex
 	apps          map[string]*AppState
 	windows       map[uint32]*WindowState
-	restoredApps  map[string]struct{}
+	restoredApps  map[string]int32
 	axTrustedPrev bool
 }
 
@@ -128,8 +128,14 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
-			if _, restored := t.restoredApps[name]; !restored {
+			restoredPID, restored := t.restoredApps[name]
+			// Legacy state has no PID, so only a known mismatch proves a relaunch.
+			pidChanged := restored && restoredPID != 0 && entry.Pid != 0 && restoredPID != entry.Pid
+			if !restored || pidChanged {
 				entry.LastActive = now
+			}
+			if pidChanged {
+				entry.DeferUntil = time.Time{}
 			}
 		}
 	}

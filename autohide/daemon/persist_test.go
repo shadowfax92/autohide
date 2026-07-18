@@ -112,6 +112,28 @@ func TestLegacyFallbackDoesNotDiscardNativeRestoreProtection(t *testing.T) {
 	}
 }
 
+func TestRelaunchedAppDoesNotInheritRestoredTimer(t *testing.T) {
+	tracker := NewTracker()
+	tracker.restoreApps(map[string]persistedAppState{
+		"Google Chrome": {Pid: 100, LastActive: at(0)},
+		"Slack": {
+			Pid: 200, LastActive: at(0), DeferUntil: at(300),
+		},
+	})
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), {Pid: 201, Name: "Slack"}}
+	windows := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 201, "Slack")}
+
+	tracker.Update(cfg, snap(chromeApp(), 1, apps, windows), at(30))
+
+	if got := appLastActive(tracker.List(cfg), "Slack"); !got.Equal(at(30)) {
+		t.Fatalf("relaunched Slack inherited restored timer: %v", got)
+	}
+	if got := tracker.apps["Slack"].DeferUntil; !got.IsZero() {
+		t.Fatalf("relaunched Slack inherited defer-until: %v", got)
+	}
+}
+
 func appLastActive(apps []AppInfo, name string) time.Time {
 	for _, app := range apps {
 		if app.Name == name {
