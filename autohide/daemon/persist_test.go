@@ -94,6 +94,24 @@ func TestRestoredAppsKeepTimersThroughFirstWindowSnapshot(t *testing.T) {
 	}
 }
 
+func TestLegacyFallbackDoesNotDiscardNativeRestoreProtection(t *testing.T) {
+	tracker := NewTracker()
+	tracker.restoreApps(map[string]persistedAppState{
+		"Google Chrome": {Pid: 100, LastActive: at(0)},
+		"Slack":         {Pid: 200, LastActive: at(0)},
+	})
+	cfg := testCfg()
+
+	tracker.UpdateLegacy(cfg, "Google Chrome", []string{"Google Chrome", "Slack"}, at(10))
+	apps := []SnapApp{chromeApp(), {Pid: 200, Name: "Slack"}}
+	windows := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 200, "Slack")}
+	tracker.Update(cfg, snap(chromeApp(), 1, apps, windows), at(30))
+
+	if got := appLastActive(tracker.List(cfg), "Slack"); !got.Equal(at(0)) {
+		t.Fatalf("native recovery re-leased restored Slack timer: %v", got)
+	}
+}
+
 func appLastActive(apps []AppInfo, name string) time.Time {
 	for _, app := range apps {
 		if app.Name == name {

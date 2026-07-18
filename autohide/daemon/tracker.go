@@ -214,7 +214,6 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 			delete(t.apps, name)
 		}
 	}
-	t.restoredApps = nil
 
 	var toHide []string
 	for name, state := range t.apps {

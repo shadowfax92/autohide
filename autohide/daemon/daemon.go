@@ -158,6 +158,7 @@ func (d *Daemon) Permissions() (axTrusted, screenRecording *bool) {
 	return axTrusted, screenRecording
 }
 
+// Run restores timer state, then services activity and persistence ticks until shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
 	d.restoreState()
 
