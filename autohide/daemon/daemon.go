@@ -22,6 +22,9 @@ type Daemon struct {
 	tracker *Tracker
 	logger  zerolog.Logger
 
+	statePath         string
+	stateSaveInterval time.Duration
+
 	actionMu      sync.Mutex
 	helper        *Helper
 	helperFails   int
@@ -45,15 +48,17 @@ type Daemon struct {
 
 func New(cfg *config.Config, cfgPath string, logger zerolog.Logger) *Daemon {
 	return &Daemon{
-		cfgPath:         cfgPath,
-		cfg:             cfg,
-		tracker:         NewTracker(),
-		logger:          logger,
-		startTime:       time.Now(),
-		windowStatus:    "starting",
-		getFrontmostApp: GetFrontmostApp,
-		getVisibleApps:  GetVisibleApps,
-		hideApp:         HideApp,
+		cfgPath:           cfgPath,
+		cfg:               cfg,
+		tracker:           NewTracker(),
+		logger:            logger,
+		statePath:         defaultTrackerStatePath(),
+		stateSaveInterval: defaultStateSaveInterval,
+		startTime:         time.Now(),
+		windowStatus:      "starting",
+		getFrontmostApp:   GetFrontmostApp,
+		getVisibleApps:    GetVisibleApps,
+		hideApp:           HideApp,
 	}
 }
 
@@ -154,9 +159,14 @@ func (d *Daemon) Permissions() (axTrusted, screenRecording *bool) {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	d.restoreState()
+
 	interval := d.cfg.General.CheckInterval.Duration
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	stateTicker := time.NewTicker(d.stateSaveInterval)
+	defer stateTicker.Stop()
+	defer d.saveState()
 
 	d.logger.Info().
 		Dur("check_interval", interval).
@@ -174,6 +184,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			d.tick()
+		case <-stateTicker.C:
+			d.saveState()
 		}
 	}
 }
