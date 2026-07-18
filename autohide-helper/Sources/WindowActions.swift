@@ -1,15 +1,34 @@
 import AppKit
+import ApplicationServices
 
-// Hides one app by pid — a whole-app hide (clean Cmd-Tab restore). Returns an
-// error reason, or nil on success.
+private let hidePollAttempts = 20
+private let hidePollInterval: TimeInterval = 0.05
+
+/// Hides one whole app, falling back to a bounded visibility poll when AX is unavailable.
 func hideApp(pid: pid_t) -> String? {
     guard let app = NSRunningApplication(processIdentifier: pid) else {
         return "no running application with pid \(pid)"
     }
-    // hide() returns false when the app is already hidden (e.g. another
-    // autohide tick won the race) — already-hidden is success here.
     if app.isHidden { return nil }
-    if app.hide() { return nil }
-    if app.isHidden { return nil }
-    return "hide request for pid \(pid) was refused"
+
+    var axError = AXError.apiDisabled
+    if AXIsProcessTrusted() {
+        let appElement = AXUIElementCreateApplication(pid)
+        axError = AXUIElementSetAttributeValue(
+            appElement,
+            kAXHiddenAttribute as CFString,
+            kCFBooleanTrue
+        )
+        if axError == .success { return nil }
+    }
+
+    _ = app.hide()
+    for _ in 0..<hidePollAttempts {
+        if app.isHidden || app.isTerminated { return nil }
+        Thread.sleep(forTimeInterval: hidePollInterval)
+    }
+    if app.isHidden || app.isTerminated { return nil }
+
+    let grace = Double(hidePollAttempts) * hidePollInterval
+    return "app pid \(pid) still visible after \(String(format: "%.1f", grace))s grace (AXError \(axError.rawValue))"
 }

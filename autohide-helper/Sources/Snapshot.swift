@@ -1,9 +1,8 @@
 import AppKit
 import ApplicationServices
 
-// CGWindowID for an AX window element. Private but stable for 10+ years
-// (AltTab/yabai depend on it); resolveAXWindow falls back to frame/title
-// matching if it ever fails.
+// AX does not publicly expose the CGWindowID needed to join fullscreen state
+// to the CGWindowList entry already used by the tracker.
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ identifier: inout CGWindowID) -> AXError
 
@@ -11,6 +10,7 @@ struct SnapApp: Encodable {
     let pid: Int32
     let name: String
     let hidden: Bool
+    let unhidable: String
 }
 
 struct SnapWindow: Encodable {
@@ -44,6 +44,8 @@ struct SnapshotPayload: Encodable {
 }
 
 private let minWindowDimension: CGFloat = 50
+private let fullscreenTolerance: CGFloat = 2
+private let axFullScreenAttribute = "AXFullScreen" as CFString
 
 func regularApps() -> [NSRunningApplication] {
     NSWorkspace.shared.runningApplications.filter {
@@ -58,11 +60,10 @@ func makeSnapshotJSON() -> String {
         uniquingKeysWith: { first, _ in first }
     )
 
-    let apps = running.map {
-        SnapApp(pid: $0.processIdentifier, name: $0.localizedName ?? "", hidden: $0.isHidden)
-    }
-
     var windows: [SnapWindow] = []
+    var windowIDsByPid: [pid_t: [CGWindowID]] = [:]
+    var fullscreenWindowIDs = Set<CGWindowID>()
+    let screens = activeDisplayBounds()
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     if let infos = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] {
         for info in infos {
@@ -72,13 +73,20 @@ func makeSnapshotJSON() -> String {
                   let appName = namesByPid[pid]
             else { continue }
             if let alpha = info[kCGWindowAlpha as String] as? Double, alpha <= 0 { continue }
-            if let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
-               let w = bounds["Width"], let h = bounds["Height"],
-               w < minWindowDimension || h < minWindowDimension { continue }
+            guard let values = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = values["X"], let y = values["Y"],
+                  let width = values["Width"], let height = values["Height"]
+            else { continue }
+            if width < minWindowDimension || height < minWindowDimension { continue }
+            let bounds = CGRect(x: x, y: y, width: width, height: height)
+            if screens.contains(where: { approximatelyEqual(bounds, $0) }) {
+                fullscreenWindowIDs.insert(id)
+            }
             // Title requires Screen Recording permission; display-only, so
             // empty is fine.
             let title = info[kCGWindowName as String] as? String ?? ""
             windows.append(SnapWindow(id: id, pid: pid, app: appName, title: title))
+            windowIDsByPid[pid, default: []].append(id)
         }
     }
 
@@ -93,6 +101,22 @@ func makeSnapshotJSON() -> String {
     if trusted, let front, front.activationPolicy == .regular {
         focusedID = focusedWindowID(pid: front.processIdentifier)
     }
+    if trusted {
+        fullscreenWindowIDs.formUnion(fullscreenAXWindowIDs(running: running))
+    }
+
+    let apps = running.map { app in
+        let ids = windowIDsByPid[app.processIdentifier] ?? []
+        let unhidable = !ids.isEmpty && ids.allSatisfy(fullscreenWindowIDs.contains)
+            ? "fullscreen"
+            : ""
+        return SnapApp(
+            pid: app.processIdentifier,
+            name: app.localizedName ?? "",
+            hidden: app.isHidden,
+            unhidable: unhidable
+        )
+    }
 
     let payload = SnapshotPayload(
         axTrusted: trusted,
@@ -103,6 +127,50 @@ func makeSnapshotJSON() -> String {
         windows: windows
     )
     return encodeJSON(payload)
+}
+
+private func activeDisplayBounds() -> [CGRect] {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+    var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return [] }
+    return displays.prefix(Int(count)).map(CGDisplayBounds)
+}
+
+private func approximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+    abs(lhs.minX - rhs.minX) <= fullscreenTolerance
+        && abs(lhs.minY - rhs.minY) <= fullscreenTolerance
+        && abs(lhs.width - rhs.width) <= fullscreenTolerance
+        && abs(lhs.height - rhs.height) <= fullscreenTolerance
+}
+
+/// Returns CG window IDs whose AX elements report fullscreen, including Split View members.
+private func fullscreenAXWindowIDs(running: [NSRunningApplication]) -> Set<CGWindowID> {
+    var ids = Set<CGWindowID>()
+    for app in running {
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            appElement,
+            kAXWindowsAttribute as CFString,
+            &value
+        ) == .success, let windows = value as? [AXUIElement] else { continue }
+
+        for window in windows {
+            var fullscreenValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                window,
+                axFullScreenAttribute,
+                &fullscreenValue
+            ) == .success, fullscreenValue as? Bool == true else { continue }
+
+            var id: CGWindowID = 0
+            if _AXUIElementGetWindow(window, &id) == .success {
+                ids.insert(id)
+            }
+        }
+    }
+    return ids
 }
 
 private func focusedWindowID(pid: pid_t) -> CGWindowID {
