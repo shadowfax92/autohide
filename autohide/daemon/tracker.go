@@ -108,37 +108,11 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		}
 	}
 
-	running := make(map[string]bool, len(snap.Apps))
-	for _, a := range snap.Apps {
-		running[a.Name] = true
-		entry, ok := t.apps[a.Name]
-		if !ok {
-			entry = &AppState{LastActive: now}
-			t.apps[a.Name] = entry
-		}
-		entry.Pid = a.Pid
-		entry.Unhidable = ""
-		if a.Unhidable != nil {
-			entry.Unhidable = *a.Unhidable
-		}
-		// Mirror reality: a failed hide self-heals (still visible next tick
-		// -> re-decided), a user unhide is seen without polling extra state.
-		entry.Hidden = a.Hidden
-	}
-	for name := range t.apps {
-		if !running[name] {
-			delete(t.apps, name)
-		}
-	}
+	t.reconcileAppsLocked(snap, now)
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
 			entry.LastActive = now
 		}
-	}
-	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
-		entry.LastActive = now
-		entry.Hidden = false
-		entry.DeferUntil = time.Time{}
 	}
 
 	var dec Decisions
@@ -167,6 +141,43 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	})
 
 	return dec
+}
+
+// ReconcileApps mirrors snapshot app state without scheduling hide decisions.
+func (t *Tracker) ReconcileApps(snap *Snapshot, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.reconcileAppsLocked(snap, now)
+}
+
+func (t *Tracker) reconcileAppsLocked(snap *Snapshot, now time.Time) {
+	running := make(map[string]bool, len(snap.Apps))
+	for _, a := range snap.Apps {
+		running[a.Name] = true
+		entry, ok := t.apps[a.Name]
+		if !ok {
+			entry = &AppState{LastActive: now}
+			t.apps[a.Name] = entry
+		}
+		entry.Pid = a.Pid
+		entry.Unhidable = ""
+		if a.Unhidable != nil {
+			entry.Unhidable = *a.Unhidable
+		}
+		// Mirror reality: a failed hide self-heals (still visible next tick
+		// -> re-decided), a user unhide is seen without polling extra state.
+		entry.Hidden = a.Hidden
+	}
+	for name := range t.apps {
+		if !running[name] {
+			delete(t.apps, name)
+		}
+	}
+	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
+		entry.LastActive = now
+		entry.Hidden = false
+		entry.DeferUntil = time.Time{}
+	}
 }
 
 // ResetWindows drops all per-window state. Called when the native path

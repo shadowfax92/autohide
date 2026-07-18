@@ -265,6 +265,7 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 
 	now := time.Now()
 	if focusMode {
+		d.tracker.ReconcileApps(snap, now)
 		// Window timers can't be maintained while focus mode owns the
 		// screen; drop them so leaving focus mode re-leases instead of
 		// showing every window as long idle.
@@ -355,6 +356,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	d.tracker.ReconcileApps(snap, time.Now())
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()

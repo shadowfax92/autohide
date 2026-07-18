@@ -49,6 +49,19 @@ func testDaemon(t *testing.T, helperScript string) *Daemon {
 	return d
 }
 
+func requireUnhidable(t *testing.T, d *Daemon, name, want string) {
+	t.Helper()
+	for _, app := range d.TrackerList() {
+		if app.Name == name {
+			if app.Unhidable != want {
+				t.Fatalf("%s list reason = %q, want %q", name, app.Unhidable, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s missing from tracker list", name)
+}
+
 const snapshotScript = "#!/bin/sh\ncat <<'JSON'\n" + fullSnapshotJSON + "\nJSON\n"
 
 const hideAllSnapshotJSON = `{
@@ -112,6 +125,7 @@ esac
 	if len(got) != 1 || got[0] != "300" {
 		t.Fatalf("helper hide pids = %v, want only Slack pid 300 (Mail skipped, Calendar failed)", got)
 	}
+	requireUnhidable(t, d, "Mail", "fullscreen")
 }
 
 func TestFocusModeSkipsUnhidableApps(t *testing.T) {
@@ -144,6 +158,7 @@ esac
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("focus-mode helper pids = %v, want %v", got, want)
 	}
+	requireUnhidable(t, d, "Mail", "fullscreen")
 }
 
 func TestFocusModeLogsStillVisibleAsWarning(t *testing.T) {

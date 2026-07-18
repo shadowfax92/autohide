@@ -7,7 +7,7 @@ private let hidePollInterval: TimeInterval = 0.05
 /// Hides one whole app, falling back to a bounded visibility poll when AX is unavailable.
 func hideApp(pid: pid_t) -> String? {
     guard let app = NSRunningApplication(processIdentifier: pid) else {
-        return "no running application with pid \(pid)"
+        return nil
     }
     if app.isHidden { return nil }
 
