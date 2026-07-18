@@ -90,6 +90,30 @@ func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 	}
 }
 
+func TestFocusModeDataCarriesConfiguredPolicyAndKeepSet(t *testing.T) {
+	s := seededServer(t)
+	s.daemon.cfg.Focus.KeepRecent = 2
+	s.daemon.cfg.Focus.Grace = config.Duration{30 * time.Second}
+
+	data := s.focusModeData(true)
+	if !data.Active || data.KeepRecent != 2 || data.Grace != "30s" {
+		t.Fatalf("focus data = %+v", data)
+	}
+	want := []string{"Google Chrome"}
+	if !equalStrings(data.KeepSet, want) {
+		t.Errorf("keep_set = %v, want %v", data.KeepSet, want)
+	}
+}
+
+func TestHandleStatusCarriesFocusKeepRecent(t *testing.T) {
+	s := seededServer(t)
+	s.daemon.cfg.Focus.KeepRecent = 4
+	data := s.handleStatus().Data.(ipc.StatusData)
+	if data.FocusKeepRecent != 4 {
+		t.Errorf("focus_keep_recent = %d, want 4", data.FocusKeepRecent)
+	}
+}
+
 func TestHandleStatusPermissionsUnknownBeforeFirstTick(t *testing.T) {
 	s := seededServer(t)
 	data := s.handleStatus().Data.(ipc.StatusData)

@@ -63,6 +63,29 @@ autohide pause --duration 1h   # auto-resume after 1 hour
 autohide resume                # resume hiding
 ```
 
+### Focus mode
+
+Focus mode keeps your recent working set visible and hides everything else
+more aggressively. By default, the three most recently used apps stay visible;
+other eligible apps hide after 10 seconds of inactivity.
+
+```bash
+autohide focus on
+autohide focus status          # show keep count, grace, and current keep-set
+autohide focus off
+
+# Tune the working-set size or grace (changes hot-reload)
+autohide config set focus.keep_recent 3
+autohide config set focus.grace 30s
+
+# Grace-only behavior: protect just the frontmost app for 30 seconds
+autohide config set focus.keep_recent 1
+autohide config set focus.grace 30s
+```
+
+Disabled apps remain exempt. `autohide hide all` stays a separate immediate
+one-shot action and does not use the focus keep-set or grace.
+
 ### Per-app configuration
 
 ```bash
@@ -89,6 +112,10 @@ default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
 system_exclude = ["Finder"]  # never hide these
 window_tracking = true       # track window activity/list detail; hiding stays app-level
+
+[focus]
+keep_recent = 3              # frontmost + two next-most-recent apps stay visible
+grace = "10s"                # delay before hiding apps outside that working set
 
 [apps]
   [apps.Finder]
@@ -118,6 +145,7 @@ autohide-ui (window) ── unix socket ──▶       │
 - **Fullscreen handling.** Apps whose visible windows are all fullscreen or in Split View are shown as `unhidable: fullscreen` and skipped until they leave that Space.
 - **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide through AppKit, while focused-window and Split View detection are limited. `autohide status` shows which mode you're in.
 - **Per-app config.** An app's `timeout`/`disabled` governs whether and when it's hidden.
+- **Focus mode.** The tracker keeps a most-recently-used app set visible and applies the shorter focus grace to other eligible apps.
 - **Permissions:** **Accessibility** (System Settings > Privacy & Security) enables the synchronous app-hide path plus focused/fullscreen window detection — grant it from the window (`autohide ui` → Settings) or System Settings. Hiding still falls back to AppKit without it. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.
 - **After reinstalling/rebuilding**, macOS may invalidate the Accessibility grant (ad-hoc code signature). If `autohide status` shows `app-only: accessibility not granted`, toggle the grant off and on again in System Settings.
 - The daemon runs via `launchd` and restarts automatically.
