@@ -87,6 +87,7 @@ default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
 system_exclude = ["Finder"]  # never hide these
 window_tracking = true       # false = legacy app-level behavior only
+hide_other_spaces = true     # hide stale apps whose windows are on another Space
 
 [apps]
   [apps.Finder]
@@ -106,12 +107,14 @@ Changes take effect within 5 seconds — the daemon hot-reloads the config file.
 ```
 autohide (CLI)      ── unix socket ──▶  autohide daemon (background)
 autohide-ui (window) ── unix socket ──▶       │
-                                         ├── polls autohide-helper snapshot every 5s
-                                         │     (apps + on-screen windows + focused window)
-                                         └── hides apps that exceed their timeout
+                                         ├── consumes autohide-helper activity events
+                                         ├── reconciles snapshots every 5s
+                                         │     (apps + on-screen windows + focus + idle time)
+                                         └── hides apps that exceed their active-use timeout
 ```
 
 - **Native snapshot.** `autohide-helper` (Swift) reads apps and on-screen windows via CGWindowList in milliseconds — no per-window AppleScript loops. The daemon hides whole apps; windows are tracked only to populate `autohide list`.
+- **Activity stream.** App switches refresh timers immediately, while sleep, lock, and input-idle time freeze them. The snapshot poll remains the source of truth and reconciles missed events.
 - **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide; the per-window info in `list` waits for the grant. `autohide status` shows which mode you're in.
 - **Per-app config.** An app's `timeout`/`disabled` governs whether and when it's hidden.
 - **Permissions:** **Accessibility** (System Settings > Privacy & Security) lets the helper read the focused window (shown in `list`) — grant it from the window (`autohide ui` → Settings) or System Settings. Window *titles* in `list --windows` additionally need Screen Recording (optional, display-only). The legacy osascript path still uses Automation.

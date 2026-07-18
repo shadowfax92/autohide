@@ -97,6 +97,68 @@ func TestStaleAppHides(t *testing.T) {
 	}
 }
 
+func TestNeverVisibleZeroWindowAppDoesNotHide(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	terminalOnly := []SnapWindow{win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, terminalOnly), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, terminalOnly), at(70))
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("a zero-window app never observed with a real window must not hide")
+	}
+}
+
+func TestSeenAppHidesAfterMovingToAnotherSpace(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	both := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	terminalOnly := []SnapWindow{win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, both), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, terminalOnly), at(70))
+	if !hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("a stale app previously seen with a window should hide on another Space")
+	}
+}
+
+func TestHideOtherSpacesDisabledPreservesZeroWindowSkip(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	cfg.General.HideOtherSpaces = false
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	both := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	terminalOnly := []SnapWindow{win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, both), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, terminalOnly), at(70))
+	if hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("hide_other_spaces=false must preserve the zero-window skip")
+	}
+}
+
+func TestOtherSpaceFrontmostDisabledAndHiddenAppsStayExempt(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "NoHide"}, {Pid: 400, Name: "Mail"}}
+	allWindows := []SnapWindow{
+		win(1, 100, "Google Chrome"),
+		win(10, 200, "Terminal"),
+		win(30, 300, "NoHide"),
+		win(40, 400, "Mail"),
+	}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, allWindows), at(0))
+	apps[3].Hidden = true
+	terminalOnly := []SnapWindow{win(10, 200, "Terminal")}
+	dec := tr.Update(cfg, snap(chromeApp(), 0, apps, terminalOnly), at(70))
+	if hasApp(dec.HideApps, "Google Chrome") || hasApp(dec.HideApps, "NoHide") || hasApp(dec.HideApps, "Mail") {
+		t.Fatalf("other-Space exemptions failed: %+v", dec.HideApps)
+	}
+}
+
 func TestEventTouchBetweenTicksPreventsEarlyHide(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()

@@ -14,10 +14,11 @@ import (
 const hideRetryBackoff = 5 * time.Minute
 
 type AppState struct {
-	Pid        int32
-	LastActive time.Time
-	Hidden     bool
-	DeferUntil time.Time
+	Pid             int32
+	LastActive      time.Time
+	Hidden          bool
+	DeferUntil      time.Time
+	SeenWithWindows bool
 }
 
 type WindowState struct {
@@ -173,6 +174,9 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 			t.apps[a.Name] = entry
 		}
 		entry.Pid = a.Pid
+		if winsByApp[a.Name] > 0 {
+			entry.SeenWithWindows = true
+		}
 		// Mirror reality: a failed hide self-heals (still visible next tick
 		// -> re-decided), a user unhide is seen without polling extra state.
 		entry.Hidden = a.Hidden
@@ -205,9 +209,12 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	var dec Decisions
 
 	for name, entry := range t.apps {
-		// Zero-window apps: hiding them is invisible and re-hide loops
-		// after unhide; skip.
-		if name == frontmost || entry.Hidden || winsByApp[name] == 0 {
+		if name == frontmost || entry.Hidden {
+			continue
+		}
+		// Never hide a zero-window app until it has proven it owns a real
+		// window; this avoids menu-bar apps and unhide/re-hide loops.
+		if winsByApp[name] == 0 && (!cfg.General.HideOtherSpaces || !entry.SeenWithWindows) {
 			continue
 		}
 		if now.Before(entry.DeferUntil) {
