@@ -17,6 +17,8 @@ func testCfg() *config.Config {
 
 func at(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
 
+func stringPtr(value string) *string { return &value }
+
 func chromeApp() SnapApp   { return SnapApp{Pid: 100, Name: "Google Chrome"} }
 func terminalApp() SnapApp { return SnapApp{Pid: 200, Name: "Terminal"} }
 
@@ -370,6 +372,39 @@ func TestHideRetryBackoff(t *testing.T) {
 	dec = tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(455))
 	if !hasApp(dec.HideApps, "Slack") {
 		t.Error("refocus must clear the hide backoff (would otherwise wait until t+680)")
+	}
+}
+
+func TestUnhidableAppSkipsWithoutBackoffAndRecovers(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	slack := SnapApp{Pid: 300, Name: "Slack", Unhidable: stringPtr("fullscreen")}
+	apps := []SnapApp{terminalApp(), slack}
+	wins := []SnapWindow{win(10, 200, "Terminal"), win(30, 300, "Slack")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70))
+	if hasApp(dec.HideApps, "Slack") {
+		t.Fatal("fullscreen Slack must not be scheduled for hiding")
+	}
+	state := tr.apps["Slack"]
+	if state.Hidden || !state.DeferUntil.IsZero() {
+		t.Fatalf("unhidable skip mutated hide state: %+v", state)
+	}
+	infos := tr.List(cfg)
+	if len(infos) != 2 {
+		t.Fatalf("tracked apps = %+v", infos)
+	}
+	for _, info := range infos {
+		if info.Name == "Slack" && info.Unhidable != "fullscreen" {
+			t.Fatalf("Slack list reason = %q, want fullscreen", info.Unhidable)
+		}
+	}
+
+	slack.Unhidable = stringPtr("")
+	dec = tr.Update(cfg, snap(terminalApp(), 10, []SnapApp{terminalApp(), slack}, wins), at(71))
+	if !hasApp(dec.HideApps, "Slack") {
+		t.Fatal("Slack should become eligible immediately after leaving fullscreen")
 	}
 }
 
