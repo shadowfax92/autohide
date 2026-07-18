@@ -28,6 +28,7 @@ public struct AppInfo: Decodable, Equatable {
     public let lastActive: String
     public let timeout: String
     public let hidden: Bool
+    public let unhidable: String?
     public let timeRemaining: String
     public let disabled: Bool
     public let windowCount: Int

@@ -12,7 +12,7 @@ struct AppsPane: View {
                 VStack(alignment: .leading, spacing: 20) {
                     PaneHeader(
                         title: "Apps",
-                        subtitle: "What the daemon is tracking right now, and when each hide lands."
+                        subtitle: "Window activity the daemon tracks, and when each whole-app hide lands."
                     )
 
                     if model.apps.isEmpty {
@@ -64,6 +64,9 @@ private struct AppRow: View {
                 if app.disabled {
                     badge("Excluded", symbol: "slash.circle")
                 }
+                if app.unhidable != nil {
+                    badge("Fullscreen", symbol: "arrow.up.left.and.arrow.down.right")
+                }
                 Spacer()
                 Text(remainingLabel)
                     .font(.system(size: 12, weight: .medium))
@@ -95,12 +98,13 @@ private struct AppRow: View {
     private var remainingLabel: String {
         if app.disabled { return "never hides" }
         if app.hidden { return "hidden" }
+        if let reason = app.unhidable { return "unhidable: \(reason)" }
         if app.timeRemaining == "0s" { return "hiding soon" }
         return "hides in \(prettyGoDuration(app.timeRemaining))"
     }
 
     private var remainingColor: Color {
-        if app.disabled || app.hidden { return .secondary }
+        if app.disabled || app.hidden || app.unhidable != nil { return .secondary }
         return Theme.Palette.running
     }
 

@@ -39,7 +39,7 @@ final class ProtocolTests: XCTestCase {
         let json = """
             {"apps": [
               {"name": "Slack", "last_active": "2026-06-12T12:00:00-07:00", "timeout": "1m0s",
-               "hidden": false, "time_remaining": "42s", "disabled": false, "window_count": 2,
+               "hidden": false, "unhidable": "fullscreen", "time_remaining": "0s", "disabled": false, "window_count": 2,
                "windows": [
                  {"id": 9, "title": "general", "last_active": "2026-06-12T12:00:00-07:00"},
                  {"id": 10, "last_active": "2026-06-12T12:00:00-07:00"}
@@ -54,7 +54,9 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(list.apps[0].windows?[0].title, "general")
         XCTAssertNil(list.apps[0].windows?[1].title)
         XCTAssertEqual(list.apps[0].windows?[1].id, 10)
+        XCTAssertEqual(list.apps[0].unhidable, "fullscreen")
         XCTAssertTrue(list.apps[1].disabled)
+        XCTAssertNil(list.apps[1].unhidable)
         XCTAssertNil(list.apps[1].windows)
     }
 }

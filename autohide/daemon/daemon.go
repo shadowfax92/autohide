@@ -362,6 +362,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 	}
 	d.helperFails = 0
 	d.setWindowStatus(resolveWindowStatus(true, true, 0, snap.AXTrusted))
+	d.tracker.ReconcileApps(snap, time.Now())
 	if !d.nativeActive {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
@@ -369,7 +370,7 @@ func (d *Daemon) hideAllNative(cfg *config.Config) (ipc.HideAllData, bool) {
 
 	var data ipc.HideAllData
 	for _, app := range snap.Apps {
-		if app.Hidden || app.Name == snap.Frontmost.Name {
+		if app.Hidden || app.Name == snap.Frontmost.Name || app.isUnhidable() {
 			continue
 		}
 		if _, disabled := cfg.EffectiveTimeout(app.Name); disabled {
