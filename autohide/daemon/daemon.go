@@ -29,14 +29,16 @@ type Daemon struct {
 	helperRetryAt time.Time
 	nativeActive  bool
 
-	mu           sync.RWMutex
-	paused       bool
-	resumeAt     *time.Time
-	focusMode    bool
-	locked       bool
-	sleeping     bool
-	startTime    time.Time
-	windowStatus string
+	mu              sync.RWMutex
+	paused          bool
+	resumeAt        *time.Time
+	focusMode       bool
+	locked          bool
+	sleeping        bool
+	awayStartedAt   time.Time
+	awayAccumulated time.Duration
+	startTime       time.Time
+	windowStatus    string
 	// nil until a helper snapshot (or ax_prompt) reports them.
 	axTrusted       *bool
 	screenRecording *bool
@@ -216,7 +218,7 @@ func (d *Daemon) tickAt(now time.Time) {
 	resumeAt := d.resumeAt
 	interval := d.cfg.General.CheckInterval.Duration
 	d.mu.RUnlock()
-	tickDelta, agingFrozen := d.beginAgingTick(now, interval)
+	tickDelta, agingShifted := d.beginAgingTick(now, interval)
 
 	if paused && resumeAt != nil && now.After(*resumeAt) {
 		d.mu.Lock()
@@ -238,41 +240,43 @@ func (d *Daemon) tickAt(now time.Time) {
 	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	if d.tickNativeWithAging(cfg, focusMode, tickDelta, agingFrozen) {
+	if d.tickNativeWithAging(cfg, focusMode, interval, tickDelta, agingShifted) {
 		return
 	}
 	d.tickLegacy(cfg, focusMode)
 }
 
 // beginAgingTick applies watch- and gap-based timer freezing once per tick.
-func (d *Daemon) beginAgingTick(now time.Time, interval time.Duration) (time.Duration, bool) {
+func (d *Daemon) beginAgingTick(now time.Time, interval time.Duration) (time.Duration, time.Duration) {
 	// Wall time includes macOS sleep even when the monotonic clock does not.
 	wallNow := now.Round(0)
 	if d.lastTick.IsZero() {
 		d.lastTick = wallNow
-		return 0, false
+		d.consumeWatchAway(wallNow)
+		return 0, 0
 	}
 	delta := wallNow.Sub(d.lastTick)
 	d.lastTick = wallNow
 	if delta <= 0 {
-		return 0, false
+		return 0, 0
 	}
-	d.mu.RLock()
-	away := d.locked || d.sleeping
-	d.mu.RUnlock()
-	if away || interval > 0 && delta > 3*interval {
+	awayDuration := min(d.consumeWatchAway(wallNow), delta)
+	if interval > 0 && delta > 3*interval {
 		d.tracker.ShiftLastActive(delta)
-		return delta, true
+		return delta, delta
 	}
-	return delta, false
+	if awayDuration > 0 {
+		d.tracker.ShiftLastActive(awayDuration)
+	}
+	return delta, awayDuration
 }
 
-func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta time.Duration, alreadyFrozen bool) bool {
-	if alreadyFrozen || delta <= 0 || snap.IdleSeconds == nil || *snap.IdleSeconds <= interval.Seconds() {
-		return alreadyFrozen
+func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta, alreadyShifted time.Duration) time.Duration {
+	if alreadyShifted >= delta || delta <= 0 || snap.IdleSeconds == nil || *snap.IdleSeconds <= interval.Seconds() {
+		return alreadyShifted
 	}
-	d.tracker.ShiftLastActive(delta)
-	return true
+	d.tracker.ShiftLastActive(delta - alreadyShifted)
+	return delta
 }
 
 // tickNative runs the helper-driven path (per-window tracking). A false
@@ -280,14 +284,15 @@ func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta time.Duration, a
 // helper missing, or helper persistently failing. Transient snapshot errors
 // consume the tick instead so the two paths never both act in one tick.
 func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
-	return d.tickNativeWithAging(cfg, focusMode, 0, false)
+	return d.tickNativeWithAging(cfg, focusMode, cfg.General.CheckInterval.Duration, 0, 0)
 }
 
 func (d *Daemon) tickNativeWithAging(
 	cfg *config.Config,
 	focusMode bool,
+	tickInterval time.Duration,
 	tickDelta time.Duration,
-	agingFrozen bool,
+	agingShifted time.Duration,
 ) bool {
 	if !cfg.General.WindowTracking {
 		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
@@ -333,7 +338,7 @@ func (d *Daemon) tickNativeWithAging(
 		d.nativeActive = true
 		d.tracker.ResetWindows()
 	}
-	d.freezeIdleTick(snap, cfg.General.CheckInterval.Duration, tickDelta, agingFrozen)
+	d.freezeIdleTick(snap, tickInterval, tickDelta, agingShifted)
 	now := time.Now()
 
 	if focusMode {

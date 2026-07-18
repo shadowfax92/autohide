@@ -198,7 +198,7 @@ func TestSnapshotCannotMoveEventTimestampBackward(t *testing.T) {
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 
 	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
-	tr.ActivateApp("Google Chrome", at(75))
+	tr.ActivateApp(100, "Google Chrome", at(75))
 	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(70))
 	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(75)) {
 		t.Fatalf("snapshot regressed event timestamp to %v", got)
@@ -211,7 +211,7 @@ func TestLegacyPollCannotMoveEventTimestampBackward(t *testing.T) {
 	visible := []string{"Terminal", "Google Chrome"}
 
 	tr.UpdateLegacy(cfg, "Terminal", visible, at(0))
-	tr.ActivateApp("Terminal", at(75))
+	tr.ActivateApp(200, "Terminal", at(75))
 	tr.UpdateLegacy(cfg, "Terminal", visible, at(70))
 	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
 		t.Fatalf("legacy poll regressed event timestamp to %v", got)
@@ -240,8 +240,8 @@ func TestRelaunchedAppGetsFreshLifetimeState(t *testing.T) {
 func TestPreSnapshotActivationSeedsOverlayFallback(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
-	tr.ActivateApp("Terminal", at(5))
-	tr.ActivateApp("Spotlight", at(6))
+	tr.ActivateApp(200, "Terminal", at(5))
+	tr.ActivateApp(999, "Spotlight", at(6))
 	if tr.Count() != 0 {
 		t.Fatal("unreconciled app events must not create tracker entries")
 	}
@@ -249,6 +249,7 @@ func TestPreSnapshotActivationSeedsOverlayFallback(t *testing.T) {
 	apps := []SnapApp{chromeApp(), terminalApp()}
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
+	overlay.StartedAt = at(50)
 	tr.Update(cfg, overlay, at(10))
 	dec := tr.Update(cfg, overlay, at(75))
 	if hasApp(dec.HideApps, "Terminal") {
@@ -256,6 +257,59 @@ func TestPreSnapshotActivationSeedsOverlayFallback(t *testing.T) {
 	}
 	if got, _ := appLastActive(tr.List(cfg), "Terminal"); !got.Equal(at(75)) {
 		t.Fatalf("pre-snapshot fallback lease = %v, want t+75s", got)
+	}
+}
+
+func TestNewerActivationWinsOverSnapshotFrontmost(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ActivateApp(100, "Google Chrome", at(55))
+	stale := snap(terminalApp(), 10, apps, wins)
+	stale.StartedAt = at(50)
+	tr.Update(cfg, stale, at(60))
+	if tr.lastRegularFrontmost != "Google Chrome" {
+		t.Fatalf("last regular frontmost = %q, want Google Chrome", tr.lastRegularFrontmost)
+	}
+	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
+	tr.Update(cfg, overlay, at(70))
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(70)) {
+		t.Fatalf("newer event fallback lease = %v, want t+70s", got)
+	}
+}
+
+func TestOlderActivationDoesNotOverrideSnapshotFrontmost(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ActivateApp(100, "Google Chrome", at(40))
+	current := snap(terminalApp(), 10, apps, wins)
+	current.StartedAt = at(50)
+	tr.Update(cfg, current, at(60))
+	if tr.lastRegularFrontmost != "Terminal" {
+		t.Fatalf("last regular frontmost = %q, want Terminal", tr.lastRegularFrontmost)
+	}
+}
+
+func TestActivationCandidateRequiresMatchingPID(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.ActivateApp(999, "Terminal", at(5))
+	relaunched := []SnapApp{chromeApp(), {Pid: 300, Name: "Terminal"}}
+	overlay := snap(SnapApp{Pid: 888}, 0, relaunched, wins)
+
+	tr.Update(cfg, overlay, at(10))
+	if tr.lastRegularFrontmost != "" {
+		t.Fatalf("mismatched PID selected fallback %q", tr.lastRegularFrontmost)
 	}
 }
 
@@ -305,7 +359,7 @@ func TestActivationEventUpdatesOverlayFallback(t *testing.T) {
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 
 	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
-	tr.ActivateApp("Google Chrome", at(55))
+	tr.ActivateApp(100, "Google Chrome", at(55))
 	overlay := snap(SnapApp{Pid: 999}, 0, apps, wins)
 	dec := tr.Update(cfg, overlay, at(70))
 	if hasApp(dec.HideApps, "Google Chrome") {

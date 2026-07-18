@@ -124,6 +124,9 @@ func TestHelperSnapshotParsesOutput(t *testing.T) {
 	if snap.FocusedWindowID != 42 || len(snap.Windows) != 2 {
 		t.Errorf("snapshot = %+v", snap)
 	}
+	if snap.StartedAt.IsZero() {
+		t.Fatal("helper snapshot must retain its capture start time")
+	}
 }
 
 func TestHelperTimeoutKillsProcess(t *testing.T) {

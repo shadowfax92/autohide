@@ -43,13 +43,18 @@ type AppInfo struct {
 	Windows    []WindowDetail
 }
 
+type activationCandidate struct {
+	Pid int32
+	At  time.Time
+}
+
 type Tracker struct {
 	mu                   sync.RWMutex
 	apps                 map[string]*AppState
 	windows              map[uint32]*WindowState
 	axTrustedPrev        bool
 	lastRegularFrontmost string
-	activationCandidates map[string]time.Time
+	activationCandidates map[string]activationCandidate
 }
 
 // TouchApp advances an app lease using an activity event timestamp.
@@ -63,19 +68,20 @@ func (t *Tracker) TouchApp(name string, at time.Time) {
 }
 
 // ActivateApp touches a known regular app and remembers it as frontmost.
-func (t *Tracker) ActivateApp(name string, at time.Time) {
+func (t *Tracker) ActivateApp(pid int32, name string, at time.Time) {
 	if name == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if previous, ok := t.activationCandidates[name]; !ok || at.After(previous) {
-		t.activationCandidates[name] = at
+	if previous, ok := t.activationCandidates[name]; !ok || at.After(previous.At) {
+		t.activationCandidates[name] = activationCandidate{Pid: pid, At: at}
 	}
 	entry, known := t.apps[name]
-	if !known {
+	if !known || entry.Pid != 0 && entry.Pid != pid {
 		return
 	}
+	entry.Pid = pid
 	if at.After(entry.LastActive) {
 		entry.LastActive = at
 	}
@@ -113,7 +119,7 @@ func NewTracker() *Tracker {
 	return &Tracker{
 		apps:                 make(map[string]*AppState),
 		windows:              make(map[uint32]*WindowState),
-		activationCandidates: make(map[string]time.Time),
+		activationCandidates: make(map[string]activationCandidate),
 	}
 }
 
@@ -169,16 +175,25 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 
 	appCounts := make(map[string]int, len(snap.Apps))
+	runningPIDs := make(map[string]map[int32]bool, len(snap.Apps))
 	for _, app := range snap.Apps {
 		appCounts[app.Name]++
+		if runningPIDs[app.Name] == nil {
+			runningPIDs[app.Name] = make(map[int32]bool)
+		}
+		runningPIDs[app.Name][app.Pid] = true
 	}
 	running := make(map[string]bool, len(snap.Apps))
 	for _, a := range snap.Apps {
 		running[a.Name] = true
 		entry, ok := t.apps[a.Name]
-		if !ok || appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid {
+		replaced := ok && appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid
+		if !ok || replaced {
 			entry = &AppState{LastActive: now}
 			t.apps[a.Name] = entry
+			if replaced && t.lastRegularFrontmost == a.Name {
+				t.lastRegularFrontmost = ""
+			}
 		}
 		entry.Pid = a.Pid
 		if winsByApp[a.Name] > 0 {
@@ -204,21 +219,20 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		}
 	}
 	frontmost := snap.Frontmost.Name
+	var latestCandidate time.Time
+	for name, candidate := range t.activationCandidates {
+		newerThanSnapshot := snap.StartedAt.IsZero() || !candidate.At.Before(snap.StartedAt)
+		seedsUnknownFrontmost := snap.Frontmost.Name == "" && t.lastRegularFrontmost == ""
+		if runningPIDs[name][candidate.Pid] && (newerThanSnapshot || seedsUnknownFrontmost) &&
+			(latestCandidate.IsZero() || candidate.At.After(latestCandidate)) {
+			frontmost = name
+			latestCandidate = candidate.At
+		}
+	}
 	if _, ok := t.apps[frontmost]; ok {
 		t.lastRegularFrontmost = frontmost
 	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
-		var latest time.Time
-		for name, activatedAt := range t.activationCandidates {
-			if running[name] && (latest.IsZero() || activatedAt.After(latest)) {
-				frontmost = name
-				latest = activatedAt
-			}
-		}
-		if frontmost == "" {
-			frontmost = t.lastRegularFrontmost
-		} else {
-			t.lastRegularFrontmost = frontmost
-		}
+		frontmost = t.lastRegularFrontmost
 	}
 	clear(t.activationCandidates)
 	if entry, ok := t.apps[frontmost]; ok {

@@ -45,6 +45,7 @@ type Snapshot struct {
 	AXTrusted       bool         `json:"ax_trusted"`
 	ScreenRecording *bool        `json:"screen_recording"`
 	IdleSeconds     *float64     `json:"idle_seconds"`
+	StartedAt       time.Time    `json:"-"`
 	Frontmost       AppRef       `json:"frontmost"`
 	FocusedWindowID uint32       `json:"focused_window_id"`
 	Apps            []SnapApp    `json:"apps"`
@@ -134,11 +135,17 @@ func locateBinary(name string, dirs []string) (string, error) {
 }
 
 func (h *Helper) Snapshot() (*Snapshot, error) {
+	startedAt := time.UnixMilli(time.Now().UnixMilli())
 	out, err := h.run("snapshot")
 	if err != nil {
 		return nil, err
 	}
-	return parseSnapshot(out)
+	snap, err := parseSnapshot(out)
+	if err != nil {
+		return nil, err
+	}
+	snap.StartedAt = startedAt
+	return snap, nil
 }
 
 func (h *Helper) Hide(pid int32) error {

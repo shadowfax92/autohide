@@ -94,9 +94,9 @@ func TestSuspendSizedTickGapFreezesAging(t *testing.T) {
 	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
 
 	d.beginAgingTick(at(0), 5*time.Second)
-	delta, frozen := d.beginAgingTick(at(20), 5*time.Second)
-	if delta != 20*time.Second || !frozen {
-		t.Fatalf("gap result = (%v, %v), want (20s, true)", delta, frozen)
+	delta, shifted := d.beginAgingTick(at(20), 5*time.Second)
+	if delta != 20*time.Second || shifted != 20*time.Second {
+		t.Fatalf("gap result = (%v, %v), want (20s, 20s)", delta, shifted)
 	}
 	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
 		t.Fatalf("gap-shifted lease = %v, want t+20s", got)
@@ -109,22 +109,22 @@ func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
 	d.beginAgingTick(at(0), 5*time.Second)
-	d.locked = true
+	d.handleWatchEvent(WatchEvent{TS: at(0).UnixMilli(), Type: "lock"})
 
-	delta, frozen := d.beginAgingTick(at(5), 5*time.Second)
+	delta, shifted := d.beginAgingTick(at(5), 5*time.Second)
 	idle := 30.0
-	frozen = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, frozen)
-	if !frozen {
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, shifted)
+	if shifted != 5*time.Second {
 		t.Fatal("locked/idle tick must freeze aging")
 	}
 	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
 		t.Fatalf("combined gates shifted more than once: lease = %v, want t+5s", got)
 	}
 
-	d.locked = false
-	delta, frozen = d.beginAgingTick(at(10), 5*time.Second)
-	frozen = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, frozen)
-	if !frozen {
+	d.handleWatchEvent(WatchEvent{TS: at(5).UnixMilli(), Type: "unlock"})
+	delta, shifted = d.beginAgingTick(at(10), 5*time.Second)
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, shifted)
+	if shifted != 5*time.Second {
 		t.Fatal("idle tick must freeze aging")
 	}
 	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(10)) {
@@ -138,13 +138,44 @@ func TestSleepingTickFreezesAging(t *testing.T) {
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
 	d.beginAgingTick(at(0), 5*time.Second)
-	d.sleeping = true
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "sleep"})
 
-	if _, frozen := d.beginAgingTick(at(5), 5*time.Second); !frozen {
+	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 4*time.Second {
 		t.Fatal("sleeping tick must freeze aging")
 	}
-	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
-		t.Fatalf("sleep-shifted lease = %v, want t+5s", got)
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
+		t.Fatalf("sleep-shifted lease = %v, want t+4s", got)
+	}
+}
+
+func TestLockIntervalBetweenTicksFreezesExactDuration(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "lock"})
+	d.handleWatchEvent(WatchEvent{TS: at(3).UnixMilli(), Type: "unlock"})
+
+	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 2*time.Second {
+		t.Fatalf("between-tick lock shifted %v, want 2s", shifted)
+	}
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(2)) {
+		t.Fatalf("lock-shifted lease = %v, want t+2s", got)
+	}
+}
+
+func TestIdleGateUsesIntervalThatDroveTick(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), time.Minute)
+	delta, shifted := d.beginAgingTick(at(60), time.Minute)
+	idle := 6.0
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, time.Minute, delta, shifted)
+	if shifted != 0 {
+		t.Fatalf("newly reloaded shorter interval shifted the prior tick by %v", shifted)
 	}
 }
 
