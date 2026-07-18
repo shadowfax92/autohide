@@ -72,6 +72,37 @@ func TestTrackerStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRestoredAppsKeepTimersThroughFirstWindowSnapshot(t *testing.T) {
+	tracker := NewTracker()
+	tracker.restoreApps(map[string]persistedAppState{
+		"Google Chrome": {Pid: 100, LastActive: at(0)},
+		"Slack":         {Pid: 200, LastActive: at(0)},
+	})
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), {Pid: 200, Name: "Slack"}}
+	windows := []SnapWindow{win(1, 100, "Google Chrome"), win(2, 200, "Slack")}
+
+	tracker.Update(cfg, snap(chromeApp(), 1, apps, windows), at(30))
+	if got := appLastActive(tracker.List(cfg), "Slack"); !got.Equal(at(0)) {
+		t.Fatalf("first snapshot re-leased restored Slack timer: %v", got)
+	}
+
+	tracker.Update(cfg, snap(chromeApp(), 1, apps, windows[:1]), at(35))
+	tracker.Update(cfg, snap(chromeApp(), 1, apps, windows), at(40))
+	if got := appLastActive(tracker.List(cfg), "Slack"); !got.Equal(at(40)) {
+		t.Fatalf("real window reappearance did not grant a fresh lease: %v", got)
+	}
+}
+
+func appLastActive(apps []AppInfo, name string) time.Time {
+	for _, app := range apps {
+		if app.Name == name {
+			return app.LastActive
+		}
+	}
+	return time.Time{}
+}
+
 func TestRestoreTrackerStateFreshnessAndInvalidFiles(t *testing.T) {
 	now := time.Date(2026, 7, 17, 17, 0, 0, 0, time.Local)
 

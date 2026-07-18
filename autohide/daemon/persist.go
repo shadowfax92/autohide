@@ -53,6 +53,7 @@ func (t *Tracker) restoreApps(apps map[string]persistedAppState) int {
 	defer t.mu.Unlock()
 
 	t.apps = make(map[string]*AppState, len(apps))
+	t.restoredApps = make(map[string]struct{}, len(apps))
 	for name, state := range apps {
 		if normalizeLegacyAppName(name) == "" {
 			continue
@@ -63,6 +64,7 @@ func (t *Tracker) restoreApps(apps map[string]persistedAppState) int {
 			Hidden:     state.Hidden,
 			DeferUntil: state.DeferUntil,
 		}
+		t.restoredApps[name] = struct{}{}
 	}
 	return len(t.apps)
 }

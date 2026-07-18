@@ -46,6 +46,7 @@ type Tracker struct {
 	mu            sync.RWMutex
 	apps          map[string]*AppState
 	windows       map[uint32]*WindowState
+	restoredApps  map[string]struct{}
 	axTrustedPrev bool
 }
 
@@ -127,9 +128,14 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	}
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
-			entry.LastActive = now
+			if _, restored := t.restoredApps[name]; !restored {
+				entry.LastActive = now
+			}
 		}
 	}
+	// Window state is intentionally ephemeral; the first snapshot must not
+	// mistake every restored app's existing windows for a real reappearance.
+	t.restoredApps = nil
 	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
 		entry.LastActive = now
 		entry.Hidden = false
@@ -208,6 +214,7 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 			delete(t.apps, name)
 		}
 	}
+	t.restoredApps = nil
 
 	var toHide []string
 	for name, state := range t.apps {
