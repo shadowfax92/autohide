@@ -75,7 +75,7 @@ func TestHandleStatusCarriesWindowTracking(t *testing.T) {
 func TestFocusModeDataCarriesConfiguredPolicyAndKeepSet(t *testing.T) {
 	s := seededServer(t)
 	s.daemon.cfg.Focus.KeepRecent = 2
-	s.daemon.cfg.Focus.Grace = config.Duration{30 * time.Second}
+	s.daemon.cfg.Focus.Grace = config.Duration{Duration: 30 * time.Second}
 
 	data := s.focusModeData(true)
 	if !data.Active || data.KeepRecent != 2 || data.Grace != "30s" {

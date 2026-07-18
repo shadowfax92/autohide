@@ -100,7 +100,7 @@ func TestFocusDecisionsKeepsRecentWorkingSet(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 3
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	chrome := chromeApp()
 	terminal := terminalApp()
 	slack := SnapApp{Pid: 300, Name: "Slack"}
@@ -132,7 +132,7 @@ func TestFocusDecisionsWaitsPastGraceBoundary(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 1
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	apps := []SnapApp{chromeApp(), terminalApp()}
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 
@@ -149,7 +149,7 @@ func TestFocusDecisionsSkipsIneligibleApps(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 1
-	cfg.Focus.Grace = config.Duration{time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: time.Second}
 	hidden := SnapApp{Pid: 300, Name: "Hidden", Hidden: true}
 	noHide := SnapApp{Pid: 400, Name: "NoHide"}
 	windowless := SnapApp{Pid: 500, Name: "Windowless"}
@@ -173,7 +173,7 @@ func TestFocusDecisionsColdEntryDoesNotHideApps(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	cfg.Focus.KeepRecent = 3
-	cfg.Focus.Grace = config.Duration{10 * time.Second}
+	cfg.Focus.Grace = config.Duration{Duration: 10 * time.Second}
 	apps := []SnapApp{chromeApp(), terminalApp(), {Pid: 300, Name: "Slack"}, {Pid: 400, Name: "Music"}}
 	wins := []SnapWindow{
 		win(1, 100, "Google Chrome"),
