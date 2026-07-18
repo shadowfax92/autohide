@@ -137,6 +137,46 @@ func TestHideAllFallsBackToLegacyWhenWindowTrackingOff(t *testing.T) {
 	}
 }
 
+func TestLegacyFocusNeverHidesMissingValues(t *testing.T) {
+	d := testDaemon(t, "")
+	d.getFrontmostApp = func() (string, error) { return "MISSING VALUE", nil }
+	d.getVisibleApps = func() ([]string, error) {
+		return []string{"", "missing value", "Slack"}, nil
+	}
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	d.tickLegacy(d.cfg, true)
+
+	if len(hidden) != 1 || hidden[0] != "Slack" {
+		t.Fatalf("legacy focus hidden apps = %v, want Slack only", hidden)
+	}
+}
+
+func TestHideAllLegacyNeverHidesMissingValues(t *testing.T) {
+	d := testDaemon(t, "")
+	d.getFrontmostApp = func() (string, error) { return "", nil }
+	d.getVisibleApps = func() ([]string, error) {
+		return []string{"missing value", "Slack"}, nil
+	}
+	var hidden []string
+	d.hideApp = func(name string) error {
+		hidden = append(hidden, name)
+		return nil
+	}
+
+	data, err := d.hideAllLegacy(d.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden) != 1 || hidden[0] != "Slack" || data.Hidden != 1 || data.Failed != 0 {
+		t.Fatalf("hide all = hidden %v, data %+v", hidden, data)
+	}
+}
+
 // Three consecutive snapshot failures latch legacy mode, but a cooldown
 // probe recovers without a daemon restart.
 func TestHelperFailureLatchAndRecovery(t *testing.T) {

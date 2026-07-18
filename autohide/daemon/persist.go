@@ -54,6 +54,9 @@ func (t *Tracker) restoreApps(apps map[string]persistedAppState) int {
 
 	t.apps = make(map[string]*AppState, len(apps))
 	for name, state := range apps {
+		if normalizeLegacyAppName(name) == "" {
+			continue
+		}
 		t.apps[name] = &AppState{
 			Pid:        state.Pid,
 			LastActive: state.LastActive,

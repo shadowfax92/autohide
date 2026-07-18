@@ -181,22 +181,32 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if state, ok := t.apps[frontmost]; ok {
-		state.LastActive = now
-		state.Hidden = false
-	} else {
-		t.apps[frontmost] = &AppState{LastActive: now}
+	frontmost = normalizeLegacyAppName(frontmost)
+	if frontmost != "" {
+		if state, ok := t.apps[frontmost]; ok {
+			state.LastActive = now
+			state.Hidden = false
+		} else {
+			t.apps[frontmost] = &AppState{LastActive: now}
+		}
 	}
 
-	for _, name := range visible {
+	visibleSet := make(map[string]bool, len(visible))
+	for _, rawName := range visible {
+		name := normalizeLegacyAppName(rawName)
+		if name == "" {
+			continue
+		}
+		visibleSet[name] = true
 		if _, ok := t.apps[name]; !ok {
 			t.apps[name] = &AppState{LastActive: now}
 		}
 	}
 
-	visibleSet := make(map[string]bool, len(visible))
-	for _, v := range visible {
-		visibleSet[v] = true
+	for name := range t.apps {
+		if normalizeLegacyAppName(name) == "" {
+			delete(t.apps, name)
+		}
 	}
 
 	var toHide []string

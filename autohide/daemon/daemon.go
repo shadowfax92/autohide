@@ -403,8 +403,10 @@ func (d *Daemon) hideAllLegacy(cfg *config.Config) (ipc.HideAllData, error) {
 		return data, err
 	}
 
-	for _, name := range visible {
-		if name == frontmost {
+	frontmost = normalizeLegacyAppName(frontmost)
+	for _, rawName := range visible {
+		name := normalizeLegacyAppName(rawName)
+		if name == "" || name == frontmost {
 			continue
 		}
 		_, disabled := cfg.EffectiveTimeout(name)
@@ -442,6 +444,7 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 		return
 	}
 
+	frontmost = normalizeLegacyAppName(frontmost)
 	visible, err := d.getVisibleApps()
 	if err != nil {
 		d.logger.Warn().Err(err).Msg("failed to get visible apps")
@@ -449,8 +452,9 @@ func (d *Daemon) tickLegacy(cfg *config.Config, focusMode bool) {
 	}
 
 	if focusMode {
-		for _, name := range visible {
-			if name == frontmost {
+		for _, rawName := range visible {
+			name := normalizeLegacyAppName(rawName)
+			if name == "" || name == frontmost {
 				continue
 			}
 			_, disabled := cfg.EffectiveTimeout(name)
