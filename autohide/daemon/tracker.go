@@ -43,10 +43,52 @@ type AppInfo struct {
 }
 
 type Tracker struct {
-	mu            sync.RWMutex
-	apps          map[string]*AppState
-	windows       map[uint32]*WindowState
-	axTrustedPrev bool
+	mu                   sync.RWMutex
+	apps                 map[string]*AppState
+	windows              map[uint32]*WindowState
+	axTrustedPrev        bool
+	lastRegularFrontmost string
+}
+
+// TouchApp advances an app lease using an activity event timestamp.
+func (t *Tracker) TouchApp(name string, at time.Time) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.touchApp(name, at)
+}
+
+// ActivateApp touches a known regular app and remembers it as frontmost.
+func (t *Tracker) ActivateApp(name string, at time.Time) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	entry, known := t.apps[name]
+	if !known {
+		t.apps[name] = &AppState{LastActive: at}
+		return
+	}
+	if at.After(entry.LastActive) {
+		entry.LastActive = at
+	}
+	entry.Hidden = false
+	entry.DeferUntil = time.Time{}
+	t.lastRegularFrontmost = name
+}
+
+func (t *Tracker) touchApp(name string, at time.Time) {
+	entry, ok := t.apps[name]
+	if !ok {
+		t.apps[name] = &AppState{LastActive: at}
+		return
+	}
+	if at.After(entry.LastActive) {
+		entry.LastActive = at
+	}
 }
 
 func NewTracker() *Tracker {

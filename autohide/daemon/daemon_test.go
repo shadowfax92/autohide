@@ -38,6 +38,39 @@ func TestResolveWindowStatus(t *testing.T) {
 	}
 }
 
+func TestHandleWatchEventTouchesAppsAndTracksAwayState(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+
+	d.handleWatchEvent(WatchEvent{TS: at(20).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+		t.Fatalf("activate touch = %v, want t+20s", got)
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(25).UnixMilli(), Type: "deactivate", Pid: 100, Name: "Google Chrome"})
+	if got, _ := appLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(25)) {
+		t.Fatalf("deactivate touch = %v, want t+25s", got)
+	}
+
+	d.handleWatchEvent(WatchEvent{TS: at(30).UnixMilli(), Type: "lock"})
+	if !d.locked {
+		t.Fatal("lock event must set locked state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(31).UnixMilli(), Type: "unlock"})
+	if d.locked {
+		t.Fatal("unlock event must clear locked state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(32).UnixMilli(), Type: "sleep"})
+	if !d.sleeping {
+		t.Fatal("sleep event must set sleeping state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(33).UnixMilli(), Type: "wake"})
+	if d.sleeping {
+		t.Fatal("wake event must clear sleeping state")
+	}
+}
+
 func testDaemon(t *testing.T, helperScript string) *Daemon {
 	t.Helper()
 	cfg := config.Default()

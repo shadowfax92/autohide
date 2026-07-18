@@ -63,6 +63,15 @@ func windowLastActive(infos []AppInfo, id uint32) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func appLastActive(infos []AppInfo, name string) (time.Time, bool) {
+	for _, info := range infos {
+		if info.Name == name {
+			return info.LastActive, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // --- App-hide tier ---
 
 // A stale background app hides once its timeout passes; the frontmost app is
@@ -85,6 +94,38 @@ func TestStaleAppHides(t *testing.T) {
 	}
 	if hasApp(dec.HideApps, "Terminal") {
 		t.Error("frontmost Terminal must never hide")
+	}
+}
+
+func TestEventTouchBetweenTicksPreventsEarlyHide(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+
+	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	tr.TouchApp("Google Chrome", at(55))
+	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(70)); hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("an app touched between polls must get a full timeout from the event")
+	}
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(55)) {
+		t.Fatalf("event touch = %v, want t+55s", got)
+	}
+	if dec := tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(116)); !hasApp(dec.HideApps, "Google Chrome") {
+		t.Fatal("the app should hide after a full timeout from the event")
+	}
+}
+
+func TestOlderEventCannotMoveLastActiveBackward(t *testing.T) {
+	tr := NewTracker()
+	cfg := testCfg()
+	apps := []SnapApp{chromeApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome")}
+
+	tr.Update(cfg, snap(chromeApp(), 1, apps, wins), at(50))
+	tr.TouchApp("Google Chrome", at(40))
+	if got, _ := appLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(50)) {
+		t.Fatalf("late event moved LastActive backward to %v", got)
 	}
 }
 

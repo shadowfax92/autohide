@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -54,8 +55,15 @@ type Decisions struct {
 	HideApps []AppRef
 }
 
-// Helper invokes the one-shot autohide-helper binary; every call is a fresh
-// process so a wedged helper can only ever cost one tick.
+type WatchEvent struct {
+	TS   int64  `json:"ts"`
+	Type string `json:"type"`
+	Pid  int32  `json:"pid,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// Helper invokes autohide-helper; one-shot calls are timeout-bounded while
+// Watch uses daemon-owned stdin and context cancellation for its lifetime.
 type Helper struct {
 	path    string
 	timeout time.Duration
@@ -138,6 +146,65 @@ func (h *Helper) Hide(pid int32) error {
 	return err
 }
 
+// Watch streams helper activity until the context closes its stdin.
+func (h *Helper) Watch(ctx context.Context, handle func(WatchEvent)) error {
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(watchCtx, h.path, "watch")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("%s watch stdin: %w", helperName, err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return fmt.Errorf("%s watch stdout: %w", helperName, err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Cancel = stdin.Close
+	cmd.WaitDelay = time.Second
+
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("%s watch: %w", helperName, err)
+	}
+
+	var streamErr error
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		event, err := parseWatchEvent(scanner.Bytes())
+		if err != nil {
+			streamErr = err
+			cancel()
+			break
+		}
+		handle(event)
+	}
+	if err := scanner.Err(); err != nil && streamErr == nil {
+		streamErr = fmt.Errorf("read watch stream: %w", err)
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if streamErr != nil {
+		return streamErr
+	}
+	if waitErr != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%s watch: %w: %s", helperName, waitErr, detail)
+		}
+		return fmt.Errorf("%s watch: %w", helperName, waitErr)
+	}
+	return fmt.Errorf("%s watch exited", helperName)
+}
+
 // CheckResult is the helper's permission probe; ScreenRecording is nil for
 // old helper builds that only report ax_trusted.
 type CheckResult struct {
@@ -195,4 +262,24 @@ func parseSnapshot(raw []byte) (*Snapshot, error) {
 		return nil, fmt.Errorf("parse snapshot: %w", err)
 	}
 	return &snap, nil
+}
+
+func parseWatchEvent(raw []byte) (WatchEvent, error) {
+	var event WatchEvent
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return WatchEvent{}, fmt.Errorf("parse watch event: %w", err)
+	}
+	if event.TS <= 0 {
+		return WatchEvent{}, fmt.Errorf("parse watch event: invalid timestamp %d", event.TS)
+	}
+	switch event.Type {
+	case "activate", "deactivate":
+		if event.Pid == 0 || event.Name == "" {
+			return WatchEvent{}, fmt.Errorf("parse watch event: %s missing app", event.Type)
+		}
+	case "space", "sleep", "wake", "lock", "unlock":
+	default:
+		return WatchEvent{}, fmt.Errorf("parse watch event: unknown type %q", event.Type)
+	}
+	return event, nil
 }

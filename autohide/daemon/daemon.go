@@ -32,6 +32,8 @@ type Daemon struct {
 	paused       bool
 	resumeAt     *time.Time
 	focusMode    bool
+	locked       bool
+	sleeping     bool
 	startTime    time.Time
 	windowStatus string
 	// nil until a helper snapshot (or ax_prompt) reports them.
@@ -166,6 +168,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if path, err := LocateHelper(); err == nil {
 		d.seedPermissions(NewHelper(path))
 	}
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		d.watchLoop(ctx)
+	}()
+	defer func() { <-watchDone }()
 
 	for {
 		select {

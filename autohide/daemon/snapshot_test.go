@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +148,54 @@ func TestHelperFailurePropagatesStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("error %q should carry stderr detail", err)
+	}
+}
+
+func TestHelperWatchStreamsEventsUntilContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	closedPath := filepath.Join(dir, "stdin-closed")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '{"ts":1000,"type":"activate","pid":42,"name":"Slack"}'
+printf '%%s\n' '{"ts":1100,"type":"lock"}'
+while IFS= read -r line; do :; done
+printf closed > %q
+`, closedPath)
+	h := NewHelper(writeFakeHelper(t, dir, script))
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan WatchEvent, 2)
+	done := make(chan error, 1)
+	go func() {
+		done <- h.Watch(ctx, func(event WatchEvent) { events <- event })
+	}()
+
+	first := <-events
+	second := <-events
+	if first.Type != "activate" || first.Pid != 42 || first.Name != "Slack" || first.TS != 1000 {
+		t.Fatalf("first event = %+v", first)
+	}
+	if second.Type != "lock" || second.Pid != 0 || second.Name != "" || second.TS != 1100 {
+		t.Fatalf("second event = %+v", second)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Watch() on cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch() did not stop after cancellation")
+	}
+	if _, err := os.Stat(closedPath); err != nil {
+		t.Fatalf("watch child did not observe stdin EOF: %v", err)
+	}
+}
+
+func TestHelperWatchRejectsMalformedEvents(t *testing.T) {
+	dir := t.TempDir()
+	h := NewHelper(writeFakeHelper(t, dir, "#!/bin/sh\nprintf '%s\\n' '{not-json'\n"))
+	if err := h.Watch(context.Background(), func(WatchEvent) {}); err == nil || !strings.Contains(err.Error(), "parse watch event") {
+		t.Fatalf("Watch() error = %v, want parse watch event", err)
 	}
 }
 
