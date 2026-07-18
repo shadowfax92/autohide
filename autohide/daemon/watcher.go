@@ -10,6 +10,11 @@ const (
 	watchRetryMax = 30 * time.Second
 )
 
+type awayInterval struct {
+	Start time.Time
+	End   time.Time
+}
+
 // watchLoop supervises the optional helper stream without blocking snapshots.
 func (d *Daemon) watchLoop(ctx context.Context) {
 	backoff := watchRetryMin
@@ -90,20 +95,20 @@ func (d *Daemon) setWatchAway(kind string, active bool, at time.Time) {
 
 func (d *Daemon) accumulateWatchAway(until time.Time) {
 	if !d.awayStartedAt.IsZero() && until.After(d.awayStartedAt) {
-		d.awayAccumulated += until.Sub(d.awayStartedAt)
+		d.awayIntervals = append(d.awayIntervals, awayInterval{Start: d.awayStartedAt, End: until})
 	}
 }
 
-func (d *Daemon) consumeWatchAway(now time.Time) time.Duration {
+func (d *Daemon) consumeWatchAway(now time.Time) []awayInterval {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.accumulateWatchAway(now)
-	duration := d.awayAccumulated
-	d.awayAccumulated = 0
+	intervals := d.awayIntervals
+	d.awayIntervals = nil
 	if d.locked || d.sleeping {
 		d.awayStartedAt = now
 	} else {
 		d.awayStartedAt = time.Time{}
 	}
-	return duration
+	return intervals
 }

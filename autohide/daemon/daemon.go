@@ -32,16 +32,16 @@ type Daemon struct {
 	helperRetryAt time.Time
 	nativeActive  bool
 
-	mu              sync.RWMutex
-	paused          bool
-	resumeAt        *time.Time
-	focusMode       bool
-	locked          bool
-	sleeping        bool
-	awayStartedAt   time.Time
-	awayAccumulated time.Duration
-	startTime       time.Time
-	windowStatus    string
+	mu            sync.RWMutex
+	paused        bool
+	resumeAt      *time.Time
+	focusMode     bool
+	locked        bool
+	sleeping      bool
+	awayStartedAt time.Time
+	awayIntervals []awayInterval
+	startTime     time.Time
+	windowStatus  string
 	// nil until a helper snapshot (or ax_prompt) reports them.
 	axTrusted       *bool
 	screenRecording *bool
@@ -168,6 +168,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.restoreState()
 
 	interval := d.cfg.General.CheckInterval.Duration
+	d.beginAgingTick(time.Now(), interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	stateTicker := time.NewTicker(d.stateSaveInterval)
@@ -268,27 +269,52 @@ func (d *Daemon) beginAgingTick(now time.Time, interval time.Duration) (time.Dur
 		d.consumeWatchAway(wallNow)
 		return 0, 0
 	}
-	delta := wallNow.Sub(d.lastTick)
+	previousTick := d.lastTick
+	delta := wallNow.Sub(previousTick)
 	d.lastTick = wallNow
 	if delta <= 0 {
 		return 0, 0
 	}
-	awayDuration := min(d.consumeWatchAway(wallNow), delta)
+	awayIntervals := d.consumeWatchAway(wallNow)
 	if interval > 0 && delta > 3*interval {
-		d.tracker.ShiftLastActive(delta)
+		d.tracker.ShiftLastActiveBefore(delta, previousTick)
+		for _, away := range awayIntervals {
+			d.tracker.FreezeLastActive(away.Start, away.End)
+		}
 		return delta, delta
 	}
-	if awayDuration > 0 {
-		d.tracker.ShiftLastActive(awayDuration)
+	var awayDuration time.Duration
+	for _, away := range awayIntervals {
+		start := laterTime(away.Start, previousTick)
+		end := earlierTime(away.End, wallNow)
+		if end.After(start) {
+			d.tracker.FreezeLastActive(start, end)
+			awayDuration += end.Sub(start)
+		}
 	}
-	return delta, awayDuration
+	return delta, min(awayDuration, delta)
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func earlierTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta, alreadyShifted time.Duration) time.Duration {
 	if alreadyShifted >= delta || delta <= 0 || snap.IdleSeconds == nil || *snap.IdleSeconds <= interval.Seconds() {
 		return alreadyShifted
 	}
-	d.tracker.ShiftLastActive(delta - alreadyShifted)
+	remaining := delta - alreadyShifted
+	d.tracker.ShiftLastActiveBefore(remaining, d.lastTick.Add(-remaining))
 	return delta
 }
 

@@ -104,6 +104,28 @@ func TestSuspendSizedTickGapFreezesAging(t *testing.T) {
 	}
 }
 
+func TestPostWakeActivationIsNotShiftedBySuspendGap(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "sleep"})
+	d.handleWatchEvent(WatchEvent{TS: at(100).UnixMilli(), Type: "wake"})
+	d.handleWatchEvent(WatchEvent{TS: at(101).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+
+	delta, shifted := d.beginAgingTick(at(105), 5*time.Second)
+	if delta != 105*time.Second || shifted != 105*time.Second {
+		t.Fatalf("gap result = (%v, %v), want (105s, 105s)", delta, shifted)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(101)) {
+		t.Fatalf("post-wake activation shifted to %v, want t+101s", got)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Terminal"); !got.Equal(at(105)) {
+		t.Fatalf("pre-suspend lease = %v, want t+105s", got)
+	}
+}
+
 func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
 	d := testDaemon(t, "")
 	apps := []SnapApp{chromeApp(), terminalApp()}
@@ -163,6 +185,22 @@ func TestLockIntervalBetweenTicksFreezesExactDuration(t *testing.T) {
 	}
 	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(2)) {
 		t.Fatalf("lock-shifted lease = %v, want t+2s", got)
+	}
+}
+
+func TestPostUnlockActivationIsNotShiftedByAwayInterval(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "lock"})
+	d.handleWatchEvent(WatchEvent{TS: at(3).UnixMilli(), Type: "unlock"})
+	d.handleWatchEvent(WatchEvent{TS: at(4).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+
+	d.beginAgingTick(at(5), 5*time.Second)
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
+		t.Fatalf("post-unlock activation shifted to %v, want t+4s", got)
 	}
 }
 

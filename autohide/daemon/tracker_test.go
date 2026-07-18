@@ -452,14 +452,14 @@ func TestActivationCandidateRequiresMatchingPID(t *testing.T) {
 	}
 }
 
-func TestShiftLastActiveFreezesAppAndWindowAging(t *testing.T) {
+func TestFreezeLastActiveFreezesAppAndWindowAging(t *testing.T) {
 	tr := NewTracker()
 	cfg := testCfg()
 	apps := []SnapApp{chromeApp(), terminalApp()}
 	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
 
 	tr.Update(cfg, snap(terminalApp(), 10, apps, wins), at(0))
-	tr.ShiftLastActive(2 * time.Minute)
+	tr.FreezeLastActive(at(0), at(120))
 	if got, _ := findAppLastActive(tr.List(cfg), "Google Chrome"); !got.Equal(at(120)) {
 		t.Fatalf("shifted app lease = %v, want t+120s", got)
 	}

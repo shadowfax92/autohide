@@ -107,19 +107,49 @@ func (t *Tracker) touchApp(name string, at time.Time) {
 	}
 }
 
-// ShiftLastActive freezes every app and window lease for an away interval.
-func (t *Tracker) ShiftLastActive(delta time.Duration) {
+// FreezeLastActive removes an exact away interval from every overlapping lease.
+func (t *Tracker) FreezeLastActive(start, end time.Time) {
+	if !end.After(start) {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, entry := range t.apps {
+		entry.LastActive = freezeLease(entry.LastActive, start, end)
+	}
+	for _, window := range t.windows {
+		window.LastActive = freezeLease(window.LastActive, start, end)
+	}
+}
+
+// ShiftLastActiveBefore applies an inferred gap only to leases that predate it.
+func (t *Tracker) ShiftLastActiveBefore(delta time.Duration, cutoff time.Time) {
 	if delta <= 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, entry := range t.apps {
-		entry.LastActive = entry.LastActive.Add(delta)
+		if !entry.LastActive.After(cutoff) {
+			entry.LastActive = entry.LastActive.Add(delta)
+		}
 	}
 	for _, window := range t.windows {
-		window.LastActive = window.LastActive.Add(delta)
+		if !window.LastActive.After(cutoff) {
+			window.LastActive = window.LastActive.Add(delta)
+		}
 	}
+}
+
+func freezeLease(lastActive, start, end time.Time) time.Time {
+	if !lastActive.Before(end) {
+		return lastActive
+	}
+	overlapStart := start
+	if lastActive.After(start) {
+		overlapStart = lastActive
+	}
+	return lastActive.Add(end.Sub(overlapStart))
 }
 
 func NewTracker() *Tracker {
