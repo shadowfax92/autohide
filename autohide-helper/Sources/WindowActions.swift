@@ -29,7 +29,8 @@ func hideApp(pid: pid_t) -> String? {
     _ = app.hide()
     for _ in 0..<hidePollAttempts {
         if app.isHidden || app.isTerminated { return nil }
-        Thread.sleep(forTimeInterval: hidePollInterval)
+        // NSRunningApplication refreshes time-varying properties on main-run-loop turns.
+        RunLoop.current.run(until: Date().addingTimeInterval(hidePollInterval))
     }
     if app.isHidden || app.isTerminated { return nil }
 
