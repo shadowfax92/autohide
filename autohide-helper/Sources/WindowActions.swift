@@ -3,6 +3,7 @@ import ApplicationServices
 
 private let hidePollAttempts = 20
 private let hidePollInterval: TimeInterval = 0.05
+private let hideAXMessagingTimeout: Float = 0.5
 
 /// Hides one whole app, falling back to a bounded visibility poll when AX is unavailable.
 func hideApp(pid: pid_t) -> String? {
@@ -14,12 +15,15 @@ func hideApp(pid: pid_t) -> String? {
     var axError = AXError.apiDisabled
     if AXIsProcessTrusted() {
         let appElement = AXUIElementCreateApplication(pid)
-        axError = AXUIElementSetAttributeValue(
-            appElement,
-            kAXHiddenAttribute as CFString,
-            kCFBooleanTrue
-        )
-        if axError == .success { return nil }
+        axError = AXUIElementSetMessagingTimeout(appElement, hideAXMessagingTimeout)
+        if axError == .success {
+            axError = AXUIElementSetAttributeValue(
+                appElement,
+                kAXHiddenAttribute as CFString,
+                kCFBooleanTrue
+            )
+            if axError == .success { return nil }
+        }
     }
 
     _ = app.hide()

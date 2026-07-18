@@ -46,6 +46,8 @@ struct SnapshotPayload: Encodable {
 private let minWindowDimension: CGFloat = 50
 private let fullscreenTolerance: CGFloat = 2
 private let axFullScreenAttribute = "AXFullScreen" as CFString
+private let snapshotAXMessagingTimeout: Float = 0.05
+private let fullscreenAXQueryBudget: TimeInterval = 1
 
 func regularApps() -> [NSRunningApplication] {
     NSWorkspace.shared.runningApplications.filter {
@@ -102,7 +104,10 @@ func makeSnapshotJSON() -> String {
         focusedID = focusedWindowID(pid: front.processIdentifier)
     }
     if trusted {
-        fullscreenWindowIDs.formUnion(fullscreenAXWindowIDs(running: running))
+        fullscreenWindowIDs.formUnion(fullscreenAXWindowIDs(
+            windowIDsByPid: windowIDsByPid,
+            knownFullscreen: fullscreenWindowIDs
+        ))
     }
 
     let apps = running.map { app in
@@ -144,11 +149,23 @@ private func approximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
         && abs(lhs.height - rhs.height) <= fullscreenTolerance
 }
 
-/// Returns CG window IDs whose AX elements report fullscreen, including Split View members.
-private func fullscreenAXWindowIDs(running: [NSRunningApplication]) -> Set<CGWindowID> {
+/// Returns on-screen window IDs whose AX elements report fullscreen, including Split View members.
+private func fullscreenAXWindowIDs(
+    windowIDsByPid: [pid_t: [CGWindowID]],
+    knownFullscreen: Set<CGWindowID>
+) -> Set<CGWindowID> {
     var ids = Set<CGWindowID>()
-    for app in running {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    let deadline = Date().addingTimeInterval(fullscreenAXQueryBudget)
+    for pid in windowIDsByPid.keys.sorted() {
+        if Date() >= deadline { break }
+        let visibleIDs = Set(windowIDsByPid[pid] ?? [])
+        if visibleIDs.isSubset(of: knownFullscreen) { continue }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        guard AXUIElementSetMessagingTimeout(
+            appElement,
+            snapshotAXMessagingTimeout
+        ) == .success else { continue }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             appElement,
@@ -157,17 +174,23 @@ private func fullscreenAXWindowIDs(running: [NSRunningApplication]) -> Set<CGWin
         ) == .success, let windows = value as? [AXUIElement] else { continue }
 
         for window in windows {
+            if Date() >= deadline { return ids }
+            guard AXUIElementSetMessagingTimeout(
+                window,
+                snapshotAXMessagingTimeout
+            ) == .success else { continue }
+            var id: CGWindowID = 0
+            guard _AXUIElementGetWindow(window, &id) == .success,
+                  visibleIDs.contains(id), !knownFullscreen.contains(id)
+            else { continue }
+
             var fullscreenValue: CFTypeRef?
             guard AXUIElementCopyAttributeValue(
                 window,
                 axFullScreenAttribute,
                 &fullscreenValue
             ) == .success, fullscreenValue as? Bool == true else { continue }
-
-            var id: CGWindowID = 0
-            if _AXUIElementGetWindow(window, &id) == .success {
-                ids.insert(id)
-            }
+            ids.insert(id)
         }
     }
     return ids
@@ -175,12 +198,15 @@ private func fullscreenAXWindowIDs(running: [NSRunningApplication]) -> Set<CGWin
 
 private func focusedWindowID(pid: pid_t) -> CGWindowID {
     let appEl = AXUIElementCreateApplication(pid)
+    guard AXUIElementSetMessagingTimeout(appEl, snapshotAXMessagingTimeout) == .success else { return 0 }
     var focused: CFTypeRef?
     guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focused) == .success,
           let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
     else { return 0 }
+    let focusedElement = focused as! AXUIElement
+    guard AXUIElementSetMessagingTimeout(focusedElement, snapshotAXMessagingTimeout) == .success else { return 0 }
     var id: CGWindowID = 0
-    guard _AXUIElementGetWindow(focused as! AXUIElement, &id) == .success else { return 0 }
+    guard _AXUIElementGetWindow(focusedElement, &id) == .success else { return 0 }
     return id
 }
 
