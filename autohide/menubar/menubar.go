@@ -17,6 +17,7 @@ const BundleID = "com.autohide.daemon"
 
 var dm *daemon.Daemon
 
+// Run owns the startup OS thread while menuet creates AppKit state and runs its event loop.
 func Run(d *daemon.Daemon) {
 	dm = d
 	app := menuet.App()
