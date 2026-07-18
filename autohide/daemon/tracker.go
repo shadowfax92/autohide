@@ -13,11 +13,12 @@ import (
 const hideRetryBackoff = 5 * time.Minute
 
 type AppState struct {
-	Pid        int32
-	LastActive time.Time
-	Hidden     bool
-	Unhidable  string
-	DeferUntil time.Time
+	Pid             int32
+	LastActive      time.Time
+	Hidden          bool
+	Unhidable       string
+	DeferUntil      time.Time
+	SeenWithWindows bool
 }
 
 type WindowState struct {
@@ -43,19 +44,119 @@ type AppInfo struct {
 	Windows    []WindowDetail
 }
 
+type activationCandidate struct {
+	Pid int32
+	At  time.Time
+}
+
 type Tracker struct {
-	mu            sync.RWMutex
-	apps          map[string]*AppState
-	windows       map[uint32]*WindowState
-	restoredApps  map[string]int32
-	recent        []string
-	axTrustedPrev bool
+	mu                   sync.RWMutex
+	apps                 map[string]*AppState
+	windows              map[uint32]*WindowState
+	restoredApps         map[string]int32
+	recent               []string
+	axTrustedPrev        bool
+	lastRegularFrontmost string
+	activationCandidates map[string]activationCandidate
+}
+
+// TouchApp advances an app lease using an activity event timestamp.
+func (t *Tracker) TouchApp(name string, at time.Time) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.touchApp(name, at)
+}
+
+// ActivateApp touches a known regular app and remembers it as frontmost.
+func (t *Tracker) ActivateApp(pid int32, name string, at time.Time) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if previous, ok := t.activationCandidates[name]; !ok || at.After(previous.At) {
+		t.activationCandidates[name] = activationCandidate{Pid: pid, At: at}
+	}
+	entry, known := t.apps[name]
+	if !known {
+		return
+	}
+	if at.After(entry.LastActive) {
+		entry.LastActive = at
+	}
+	entry.Hidden = false
+	entry.DeferUntil = time.Time{}
+	if entry.Pid != 0 && entry.Pid != pid {
+		return
+	}
+	entry.Pid = pid
+	t.lastRegularFrontmost = name
+	t.recordFrontmostLocked(name)
+}
+
+func (t *Tracker) touchApp(name string, at time.Time) {
+	entry, ok := t.apps[name]
+	if !ok {
+		return
+	}
+	if at.After(entry.LastActive) {
+		entry.LastActive = at
+	}
+}
+
+// FreezeLastActive removes an exact away interval from every overlapping lease.
+func (t *Tracker) FreezeLastActive(start, end time.Time) {
+	if !end.After(start) {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, entry := range t.apps {
+		entry.LastActive = freezeLease(entry.LastActive, start, end)
+	}
+	for _, window := range t.windows {
+		window.LastActive = freezeLease(window.LastActive, start, end)
+	}
+}
+
+// ShiftLastActiveBefore applies an inferred gap only to leases that predate it.
+func (t *Tracker) ShiftLastActiveBefore(delta time.Duration, cutoff time.Time) {
+	if delta <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, entry := range t.apps {
+		if !entry.LastActive.After(cutoff) {
+			entry.LastActive = entry.LastActive.Add(delta)
+		}
+	}
+	for _, window := range t.windows {
+		if !window.LastActive.After(cutoff) {
+			window.LastActive = window.LastActive.Add(delta)
+		}
+	}
+}
+
+func freezeLease(lastActive, start, end time.Time) time.Time {
+	if !lastActive.Before(end) {
+		return lastActive
+	}
+	overlapStart := start
+	if lastActive.After(start) {
+		overlapStart = lastActive
+	}
+	return lastActive.Add(end.Sub(overlapStart))
 }
 
 func NewTracker() *Tracker {
 	return &Tracker{
-		apps:    make(map[string]*AppState),
-		windows: make(map[uint32]*WindowState),
+		apps:                 make(map[string]*AppState),
+		windows:              make(map[uint32]*WindowState),
+		activationCandidates: make(map[string]activationCandidate),
 	}
 }
 
@@ -110,7 +211,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 		}
 	}
 
-	t.observeAppsLocked(snap, appeared, now)
+	frontmost := t.observeAppsLocked(snap, appeared, winsByApp, now)
 	// Window state is intentionally ephemeral; the first snapshot must not
 	// mistake every restored app's existing windows for a real reappearance.
 	t.restoredApps = nil
@@ -118,9 +219,12 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 	var dec Decisions
 
 	for name, entry := range t.apps {
-		// Zero-window apps: hiding them is invisible and re-hide loops
-		// after unhide; skip.
-		if name == snap.Frontmost.Name || entry.Hidden || entry.Unhidable != "" || winsByApp[name] == 0 {
+		if name == frontmost || entry.Hidden || entry.Unhidable != "" {
+			continue
+		}
+		// Never hide a zero-window app until it has proven it owns a real
+		// window; this avoids menu-bar apps and unhide/re-hide loops.
+		if winsByApp[name] == 0 && (!cfg.General.HideOtherSpaces || !entry.SeenWithWindows) {
 			continue
 		}
 		if now.Before(entry.DeferUntil) {
@@ -147,7 +251,7 @@ func (t *Tracker) Update(cfg *config.Config, snap *Snapshot, now time.Time) Deci
 func (t *Tracker) ReconcileApps(snap *Snapshot, now time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.observeAppsLocked(snap, nil, now)
+	t.observeAppsLocked(snap, nil, nil, now)
 }
 
 // FocusDecisions keeps the running MRU working set visible and applies the
@@ -156,11 +260,11 @@ func (t *Tracker) FocusDecisions(cfg *config.Config, snap *Snapshot, now time.Ti
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.observeAppsLocked(snap, nil, now)
 	winsByApp := make(map[string]int, len(snap.Windows))
 	for _, w := range snap.Windows {
 		winsByApp[w.App]++
 	}
+	t.observeAppsLocked(snap, nil, winsByApp, now)
 
 	keepRecent := cfg.Focus.KeepRecent
 	if keepRecent < 1 {
@@ -178,7 +282,10 @@ func (t *Tracker) FocusDecisions(cfg *config.Config, snap *Snapshot, now time.Ti
 	}
 	var dec Decisions
 	for name, entry := range t.apps {
-		if keep[name] || entry.Hidden || entry.Unhidable != "" || winsByApp[name] == 0 {
+		if keep[name] || entry.Hidden || entry.Unhidable != "" {
+			continue
+		}
+		if winsByApp[name] == 0 && (!cfg.General.HideOtherSpaces || !entry.SeenWithWindows) {
 			continue
 		}
 		if now.Before(entry.DeferUntil) {
@@ -206,26 +313,49 @@ func (t *Tracker) RecentApps(n int) []string {
 	return t.recentAppsLocked(n)
 }
 
-func (t *Tracker) observeAppsLocked(snap *Snapshot, appeared map[string]bool, now time.Time) {
+func (t *Tracker) observeAppsLocked(
+	snap *Snapshot,
+	appeared map[string]bool,
+	winsByApp map[string]int,
+	now time.Time,
+) string {
+	if winsByApp == nil {
+		winsByApp = make(map[string]int, len(snap.Windows))
+		for _, window := range snap.Windows {
+			winsByApp[window.App]++
+		}
+	}
+	appCounts := make(map[string]int, len(snap.Apps))
+	runningPIDs := make(map[string]map[int32]bool, len(snap.Apps))
+	for _, app := range snap.Apps {
+		appCounts[app.Name]++
+		if runningPIDs[app.Name] == nil {
+			runningPIDs[app.Name] = make(map[int32]bool)
+		}
+		runningPIDs[app.Name][app.Pid] = true
+	}
 	running := make(map[string]bool, len(snap.Apps))
 	for _, a := range snap.Apps {
 		running[a.Name] = true
 		entry, ok := t.apps[a.Name]
-		if !ok {
+		replaced := ok && appCounts[a.Name] == 1 && entry.Pid != 0 && entry.Pid != a.Pid
+		if !ok || replaced {
 			entry = &AppState{LastActive: now}
 			t.apps[a.Name] = entry
-		}
-		restoredPID, restored := t.restoredApps[a.Name]
-		// Legacy state has no PID, so only a known mismatch proves a relaunch.
-		if restored && restoredPID != 0 && a.Pid != 0 && restoredPID != a.Pid {
-			entry.LastActive = now
-			entry.DeferUntil = time.Time{}
-			delete(t.restoredApps, a.Name)
+			if replaced {
+				delete(t.restoredApps, a.Name)
+				if t.lastRegularFrontmost == a.Name {
+					t.lastRegularFrontmost = ""
+				}
+			}
 		}
 		entry.Pid = a.Pid
 		entry.Unhidable = ""
 		if a.Unhidable != nil {
 			entry.Unhidable = *a.Unhidable
+		}
+		if winsByApp[a.Name] > 0 {
+			entry.SeenWithWindows = true
 		}
 		// Mirror reality: a failed hide self-heals (still visible next tick
 		// -> re-decided), a user unhide is seen without polling extra state.
@@ -235,6 +365,9 @@ func (t *Tracker) observeAppsLocked(snap *Snapshot, appeared map[string]bool, no
 		if !running[name] {
 			delete(t.apps, name)
 		}
+	}
+	if !running[t.lastRegularFrontmost] {
+		t.lastRegularFrontmost = ""
 	}
 	pruned := t.recent[:0]
 	for _, name := range t.recent {
@@ -246,16 +379,38 @@ func (t *Tracker) observeAppsLocked(snap *Snapshot, appeared map[string]bool, no
 	for name := range appeared {
 		if entry, ok := t.apps[name]; ok {
 			if _, restored := t.restoredApps[name]; !restored {
-				entry.LastActive = now
+				if now.After(entry.LastActive) {
+					entry.LastActive = now
+				}
 			}
 		}
 	}
-	if entry, ok := t.apps[snap.Frontmost.Name]; ok {
-		entry.LastActive = now
+	frontmost := snap.Frontmost.Name
+	var latestCandidate time.Time
+	for name, candidate := range t.activationCandidates {
+		newerThanSnapshot := snap.StartedAt.IsZero() || !candidate.At.Before(snap.StartedAt)
+		seedsUnknownFrontmost := snap.Frontmost.Name == "" && t.lastRegularFrontmost == ""
+		if runningPIDs[name][candidate.Pid] && (newerThanSnapshot || seedsUnknownFrontmost) &&
+			(latestCandidate.IsZero() || candidate.At.After(latestCandidate)) {
+			frontmost = name
+			latestCandidate = candidate.At
+		}
+	}
+	if _, ok := t.apps[frontmost]; ok {
+		t.lastRegularFrontmost = frontmost
+	} else if frontmost == "" && snap.Frontmost.Pid != 0 {
+		frontmost = t.lastRegularFrontmost
+	}
+	clear(t.activationCandidates)
+	if entry, ok := t.apps[frontmost]; ok {
+		if now.After(entry.LastActive) {
+			entry.LastActive = now
+		}
 		entry.Hidden = false
 		entry.DeferUntil = time.Time{}
-		t.recordFrontmostLocked(snap.Frontmost.Name)
+		t.recordFrontmostLocked(frontmost)
 	}
+	return frontmost
 }
 
 func (t *Tracker) recordFrontmostLocked(name string) {
@@ -308,7 +463,9 @@ func (t *Tracker) UpdateLegacy(cfg *config.Config, frontmost string, visible []s
 	frontmost = normalizeLegacyAppName(frontmost)
 	if frontmost != "" {
 		if state, ok := t.apps[frontmost]; ok {
-			state.LastActive = now
+			if now.After(state.LastActive) {
+				state.LastActive = now
+			}
 			state.Hidden = false
 		} else {
 			t.apps[frontmost] = &AppState{LastActive: now}

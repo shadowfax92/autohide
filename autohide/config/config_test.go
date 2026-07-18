@@ -13,6 +13,12 @@ func TestDefaultWindowTrackingOn(t *testing.T) {
 	}
 }
 
+func TestDefaultHideOtherSpacesOn(t *testing.T) {
+	if !Default().General.HideOtherSpaces {
+		t.Fatal("Default() should enable hide_other_spaces")
+	}
+}
+
 func TestLoadWithoutKeyKeepsWindowTrackingOn(t *testing.T) {
 	path := writeConfig(t, "[general]\ndefault_timeout = \"2m\"\n")
 	cfg, err := Load(path)
@@ -22,8 +28,22 @@ func TestLoadWithoutKeyKeepsWindowTrackingOn(t *testing.T) {
 	if !cfg.General.WindowTracking {
 		t.Error("absent window_tracking key should keep default true")
 	}
+	if !cfg.General.HideOtherSpaces {
+		t.Error("absent hide_other_spaces key should keep default true")
+	}
 	if cfg.General.DefaultTimeout.Duration != 2*time.Minute {
 		t.Errorf("default_timeout = %v, want 2m", cfg.General.DefaultTimeout.Duration)
+	}
+}
+
+func TestLoadHideOtherSpacesFalse(t *testing.T) {
+	path := writeConfig(t, "[general]\nhide_other_spaces = false\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.General.HideOtherSpaces {
+		t.Error("hide_other_spaces = false should load as false")
 	}
 }
 
@@ -51,6 +71,22 @@ func TestSaveLoadRoundtripsWindowTracking(t *testing.T) {
 	}
 	if loaded.General.WindowTracking {
 		t.Error("saved false should load as false")
+	}
+}
+
+func TestSaveLoadRoundtripsHideOtherSpaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.General.HideOtherSpaces = false
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.General.HideOtherSpaces {
+		t.Error("saved hide_other_spaces=false should load as false")
 	}
 }
 

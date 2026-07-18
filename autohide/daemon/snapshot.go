@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,12 +45,13 @@ type SnapWindow struct {
 }
 
 // Snapshot is the autohide-helper view of one poll tick: regular running
-// apps, on-screen windows of the current Space, and what has focus.
-// ScreenRecording is a pointer for the same reason as CheckResult's: old
-// helper builds omit it, and absent must stay "unknown", not "denied".
+// apps, on-screen windows of the current Space, focus, and user idle time.
+// Optional pointer fields preserve "unknown" when old helper builds omit them.
 type Snapshot struct {
 	AXTrusted       bool         `json:"ax_trusted"`
 	ScreenRecording *bool        `json:"screen_recording"`
+	IdleSeconds     *float64     `json:"idle_seconds"`
+	StartedAt       time.Time    `json:"-"`
 	Frontmost       AppRef       `json:"frontmost"`
 	FocusedWindowID uint32       `json:"focused_window_id"`
 	Apps            []SnapApp    `json:"apps"`
@@ -60,8 +62,15 @@ type Decisions struct {
 	HideApps []AppRef
 }
 
-// Helper invokes the one-shot autohide-helper binary; every call is a fresh
-// process so a wedged helper can only ever cost one tick.
+type WatchEvent struct {
+	TS   int64  `json:"ts"`
+	Type string `json:"type"`
+	Pid  int32  `json:"pid,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// Helper invokes autohide-helper; one-shot calls are timeout-bounded while
+// Watch uses daemon-owned stdin and context cancellation for its lifetime.
 type Helper struct {
 	path    string
 	timeout time.Duration
@@ -132,16 +141,81 @@ func locateBinary(name string, dirs []string) (string, error) {
 }
 
 func (h *Helper) Snapshot() (*Snapshot, error) {
+	startedAt := time.UnixMilli(time.Now().UnixMilli())
 	out, err := h.run("snapshot")
 	if err != nil {
 		return nil, err
 	}
-	return parseSnapshot(out)
+	snap, err := parseSnapshot(out)
+	if err != nil {
+		return nil, err
+	}
+	snap.StartedAt = startedAt
+	return snap, nil
 }
 
 func (h *Helper) Hide(pid int32) error {
 	_, err := h.run("hide", strconv.Itoa(int(pid)))
 	return err
+}
+
+// Watch streams helper activity until the context closes its stdin.
+func (h *Helper) Watch(ctx context.Context, handle func(WatchEvent)) error {
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(watchCtx, h.path, "watch")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("%s watch stdin: %w", helperName, err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return fmt.Errorf("%s watch stdout: %w", helperName, err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Cancel = stdin.Close
+	cmd.WaitDelay = time.Second
+
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("%s watch: %w", helperName, err)
+	}
+
+	var streamErr error
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		event, err := parseWatchEvent(scanner.Bytes())
+		if err != nil {
+			streamErr = err
+			cancel()
+			break
+		}
+		handle(event)
+	}
+	if err := scanner.Err(); err != nil && streamErr == nil {
+		streamErr = fmt.Errorf("read watch stream: %w", err)
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if streamErr != nil {
+		return streamErr
+	}
+	if waitErr != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%s watch: %w: %s", helperName, waitErr, detail)
+		}
+		return fmt.Errorf("%s watch: %w", helperName, waitErr)
+	}
+	return fmt.Errorf("%s watch exited", helperName)
 }
 
 // CheckResult is the helper's permission probe; ScreenRecording is nil for
@@ -201,4 +275,24 @@ func parseSnapshot(raw []byte) (*Snapshot, error) {
 		return nil, fmt.Errorf("parse snapshot: %w", err)
 	}
 	return &snap, nil
+}
+
+func parseWatchEvent(raw []byte) (WatchEvent, error) {
+	var event WatchEvent
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return WatchEvent{}, fmt.Errorf("parse watch event: %w", err)
+	}
+	if event.TS <= 0 {
+		return WatchEvent{}, fmt.Errorf("parse watch event: invalid timestamp %d", event.TS)
+	}
+	switch event.Type {
+	case "activate", "deactivate":
+		if event.Pid == 0 || event.Name == "" {
+			return WatchEvent{}, fmt.Errorf("parse watch event: %s missing app", event.Type)
+		}
+	case "space", "sleep", "wake", "lock", "unlock":
+	default:
+		return WatchEvent{}, fmt.Errorf("parse watch event: unknown type %q", event.Type)
+	}
+	return event, nil
 }

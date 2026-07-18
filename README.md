@@ -112,6 +112,7 @@ default_timeout = "1m"       # hide apps after this long
 check_interval = "5s"        # how often to check
 system_exclude = ["Finder"]  # never hide these
 window_tracking = true       # track window activity/list detail; hiding stays app-level
+hide_other_spaces = true     # hide stale apps whose windows are on another Space
 
 [focus]
 keep_recent = 3              # frontmost + two next-most-recent apps stay visible
@@ -135,13 +136,15 @@ Changes take effect within 5 seconds — the daemon hot-reloads the config file.
 ```
 autohide (CLI)      ── unix socket ──▶  autohide daemon (background)
 autohide-ui (window) ── unix socket ──▶       │
-                                         ├── polls autohide-helper snapshot every 5s
-                                         │     (apps + on-screen windows + focused window)
-                                         └── hides apps that exceed their timeout
+                                         ├── consumes autohide-helper activity events
+                                         ├── reconciles snapshots every 5s
+                                         │     (apps + on-screen windows + focus + idle time)
+                                         └── hides apps that exceed their active-use timeout
 ```
 
 - **App-level hiding.** Every hide is equivalent to Cmd-H: all windows belonging to the app hide and restore together. Individual windows are never minimized, masked, or moved.
 - **Native snapshot.** `autohide-helper` (Swift) reads apps and on-screen windows via CGWindowList in milliseconds. Window observations drive activity timers and `autohide list`; they are not independently hidden.
+- **Activity stream.** App switches refresh timers immediately, while sleep, lock, and input-idle time freeze them. The snapshot poll remains the source of truth and reconciles missed events.
 - **Fullscreen handling.** Apps whose visible windows are all fullscreen or in Split View are shown as `unhidable: fullscreen` and skipped until they leave that Space.
 - **Graceful fallback.** Helper missing → the daemon runs the legacy osascript app-level path. Accessibility not granted → apps still hide through AppKit, while focused-window and Split View detection are limited. `autohide status` shows which mode you're in.
 - **Per-app config.** An app's `timeout`/`disabled` governs whether and when it's hidden.

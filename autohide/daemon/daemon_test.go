@@ -39,6 +39,185 @@ func TestResolveWindowStatus(t *testing.T) {
 	}
 }
 
+func TestResetTickerInterval(t *testing.T) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	if got := resetTickerInterval(ticker, time.Hour, 5*time.Millisecond); got != 5*time.Millisecond {
+		t.Fatalf("reset interval = %v, want 5ms", got)
+	}
+	select {
+	case <-ticker.C:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ticker did not adopt the reloaded interval")
+	}
+	if got := resetTickerInterval(ticker, 5*time.Millisecond, 0); got != 5*time.Millisecond {
+		t.Fatalf("invalid interval changed ticker to %v", got)
+	}
+}
+
+func TestHandleWatchEventTouchesAppsAndTracksAwayState(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+
+	d.handleWatchEvent(WatchEvent{TS: at(20).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+		t.Fatalf("activate touch = %v, want t+20s", got)
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(25).UnixMilli(), Type: "deactivate", Pid: 100, Name: "Google Chrome"})
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(25)) {
+		t.Fatalf("deactivate touch = %v, want t+25s", got)
+	}
+
+	d.handleWatchEvent(WatchEvent{TS: at(30).UnixMilli(), Type: "lock"})
+	if !d.locked {
+		t.Fatal("lock event must set locked state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(31).UnixMilli(), Type: "unlock"})
+	if d.locked {
+		t.Fatal("unlock event must clear locked state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(32).UnixMilli(), Type: "sleep"})
+	if !d.sleeping {
+		t.Fatal("sleep event must set sleeping state")
+	}
+	d.handleWatchEvent(WatchEvent{TS: at(33).UnixMilli(), Type: "wake"})
+	if d.sleeping {
+		t.Fatal("wake event must clear sleeping state")
+	}
+}
+
+func TestSuspendSizedTickGapFreezesAging(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+
+	d.beginAgingTick(at(0), 5*time.Second)
+	delta, shifted := d.beginAgingTick(at(20), 5*time.Second)
+	if delta != 20*time.Second || shifted != 20*time.Second {
+		t.Fatalf("gap result = (%v, %v), want (20s, 20s)", delta, shifted)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(20)) {
+		t.Fatalf("gap-shifted lease = %v, want t+20s", got)
+	}
+}
+
+func TestPostWakeActivationIsNotShiftedBySuspendGap(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "sleep"})
+	d.handleWatchEvent(WatchEvent{TS: at(100).UnixMilli(), Type: "wake"})
+	d.handleWatchEvent(WatchEvent{TS: at(101).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+
+	delta, shifted := d.beginAgingTick(at(105), 5*time.Second)
+	if delta != 105*time.Second || shifted != 105*time.Second {
+		t.Fatalf("gap result = (%v, %v), want (105s, 105s)", delta, shifted)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(101)) {
+		t.Fatalf("post-wake activation shifted to %v, want t+101s", got)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Terminal"); !got.Equal(at(105)) {
+		t.Fatalf("pre-suspend lease = %v, want t+105s", got)
+	}
+}
+
+func TestLockedAndIdleTicksFreezeOnce(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(0).UnixMilli(), Type: "lock"})
+
+	delta, shifted := d.beginAgingTick(at(5), 5*time.Second)
+	idle := 30.0
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, shifted)
+	if shifted != 5*time.Second {
+		t.Fatal("locked/idle tick must freeze aging")
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(5)) {
+		t.Fatalf("combined gates shifted more than once: lease = %v, want t+5s", got)
+	}
+
+	d.handleWatchEvent(WatchEvent{TS: at(5).UnixMilli(), Type: "unlock"})
+	delta, shifted = d.beginAgingTick(at(10), 5*time.Second)
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, 5*time.Second, delta, shifted)
+	if shifted != 5*time.Second {
+		t.Fatal("idle tick must freeze aging")
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(10)) {
+		t.Fatalf("idle-shifted lease = %v, want t+10s", got)
+	}
+}
+
+func TestSleepingTickFreezesAging(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "sleep"})
+
+	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 4*time.Second {
+		t.Fatal("sleeping tick must freeze aging")
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
+		t.Fatalf("sleep-shifted lease = %v, want t+4s", got)
+	}
+}
+
+func TestLockIntervalBetweenTicksFreezesExactDuration(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "lock"})
+	d.handleWatchEvent(WatchEvent{TS: at(3).UnixMilli(), Type: "unlock"})
+
+	if _, shifted := d.beginAgingTick(at(5), 5*time.Second); shifted != 2*time.Second {
+		t.Fatalf("between-tick lock shifted %v, want 2s", shifted)
+	}
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(2)) {
+		t.Fatalf("lock-shifted lease = %v, want t+2s", got)
+	}
+}
+
+func TestPostUnlockActivationIsNotShiftedByAwayInterval(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), 5*time.Second)
+	d.handleWatchEvent(WatchEvent{TS: at(1).UnixMilli(), Type: "lock"})
+	d.handleWatchEvent(WatchEvent{TS: at(3).UnixMilli(), Type: "unlock"})
+	d.handleWatchEvent(WatchEvent{TS: at(4).UnixMilli(), Type: "activate", Pid: 100, Name: "Google Chrome"})
+
+	d.beginAgingTick(at(5), 5*time.Second)
+	if got, _ := findAppLastActive(d.tracker.List(d.cfg), "Google Chrome"); !got.Equal(at(4)) {
+		t.Fatalf("post-unlock activation shifted to %v, want t+4s", got)
+	}
+}
+
+func TestIdleGateUsesIntervalThatDroveTick(t *testing.T) {
+	d := testDaemon(t, "")
+	apps := []SnapApp{chromeApp(), terminalApp()}
+	wins := []SnapWindow{win(1, 100, "Google Chrome"), win(10, 200, "Terminal")}
+	d.tracker.Update(d.cfg, snap(terminalApp(), 10, apps, wins), at(0))
+	d.beginAgingTick(at(0), time.Minute)
+	delta, shifted := d.beginAgingTick(at(60), time.Minute)
+	idle := 6.0
+	shifted = d.freezeIdleTick(&Snapshot{IdleSeconds: &idle}, time.Minute, delta, shifted)
+	if shifted != 0 {
+		t.Fatalf("newly reloaded shorter interval shifted the prior tick by %v", shifted)
+	}
+}
+
 func testDaemon(t *testing.T, helperScript string) *Daemon {
 	t.Helper()
 	cfg := config.Default()

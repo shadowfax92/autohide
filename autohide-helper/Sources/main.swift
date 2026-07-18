@@ -1,8 +1,6 @@
 import Foundation
 
-// One-shot CLI the Go daemon spawns each tick: `snapshot` reports apps +
-// on-screen windows + focus as JSON; `hide <pid>` hides one app. Exit 0 with
-// JSON/empty stdout, or exit 1 with a reason on stderr.
+// Helper CLI for one-shot snapshots/actions and the daemon-owned watch stream.
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -12,12 +10,14 @@ func fail(_ message: String) -> Never {
 let args = Array(CommandLine.arguments.dropFirst())
 
 guard let command = args.first else {
-    fail("usage: autohide-helper snapshot | hide <pid> | check [--prompt]")
+    fail("usage: autohide-helper snapshot | watch | hide <pid> | check [--prompt]")
 }
 
 switch command {
 case "snapshot":
     print(makeSnapshotJSON())
+case "watch":
+    runWatcher()
 case "hide":
     guard args.count == 2, let pid = pid_t(args[1]) else {
         fail("usage: autohide-helper hide <pid>")

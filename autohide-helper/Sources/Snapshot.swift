@@ -28,6 +28,7 @@ struct Frontmost: Encodable {
 struct SnapshotPayload: Encodable {
     let axTrusted: Bool
     let screenRecording: Bool
+    let idleSeconds: Double
     let frontmost: Frontmost
     let focusedWindowId: UInt32
     let apps: [SnapApp]
@@ -36,6 +37,7 @@ struct SnapshotPayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case axTrusted = "ax_trusted"
         case screenRecording = "screen_recording"
+        case idleSeconds = "idle_seconds"
         case frontmost
         case focusedWindowId = "focused_window_id"
         case apps
@@ -44,6 +46,8 @@ struct SnapshotPayload: Encodable {
 }
 
 private let minWindowDimension: CGFloat = 50
+// kCGAnyInputEventType is a C macro and is not imported into Swift.
+private let anyInputEventType = CGEventType(rawValue: ~0)!
 private let fullscreenTolerance: CGFloat = 2
 private let axFullScreenAttribute = "AXFullScreen" as CFString
 private let snapshotAXMessagingTimeout: Float = 0.05
@@ -126,6 +130,10 @@ func makeSnapshotJSON() -> String {
     let payload = SnapshotPayload(
         axTrusted: trusted,
         screenRecording: CGPreflightScreenCaptureAccess(),
+        idleSeconds: CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState,
+            eventType: anyInputEventType
+        ),
         frontmost: frontmost,
         focusedWindowId: focusedID,
         apps: apps,

@@ -26,17 +26,22 @@ type Daemon struct {
 	stateSaveInterval time.Duration
 
 	actionMu      sync.Mutex
+	lastTick      time.Time
 	helper        *Helper
 	helperFails   int
 	helperRetryAt time.Time
 	nativeActive  bool
 
-	mu           sync.RWMutex
-	paused       bool
-	resumeAt     *time.Time
-	focusMode    bool
-	startTime    time.Time
-	windowStatus string
+	mu            sync.RWMutex
+	paused        bool
+	resumeAt      *time.Time
+	focusMode     bool
+	locked        bool
+	sleeping      bool
+	awayStartedAt time.Time
+	awayIntervals []awayInterval
+	startTime     time.Time
+	windowStatus  string
 	// nil until a helper snapshot (or ax_prompt) reports them.
 	axTrusted       *bool
 	screenRecording *bool
@@ -163,6 +168,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.restoreState()
 
 	interval := d.cfg.General.CheckInterval.Duration
+	d.beginAgingTick(time.Now(), interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	stateTicker := time.NewTicker(d.stateSaveInterval)
@@ -177,6 +183,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if path, err := LocateHelper(); err == nil {
 		d.seedPermissions(NewHelper(path))
 	}
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		d.watchLoop(ctx)
+	}()
+	defer func() { <-watchDone }()
 
 	for {
 		select {
@@ -185,22 +197,44 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			d.tick()
+			d.mu.RLock()
+			nextInterval := d.cfg.General.CheckInterval.Duration
+			d.mu.RUnlock()
+			previousInterval := interval
+			interval = resetTickerInterval(ticker, interval, nextInterval)
+			if interval != previousInterval {
+				d.logger.Info().Dur("from", previousInterval).Dur("to", interval).Msg("check interval changed")
+			}
 		case <-stateTicker.C:
 			d.saveState()
 		}
 	}
 }
 
+func resetTickerInterval(ticker *time.Ticker, current, next time.Duration) time.Duration {
+	if next <= 0 || next == current {
+		return current
+	}
+	ticker.Reset(next)
+	return next
+}
+
 func (d *Daemon) tick() {
+	d.tickAt(time.Now())
+}
+
+func (d *Daemon) tickAt(now time.Time) {
 	d.actionMu.Lock()
 	defer d.actionMu.Unlock()
 
 	d.mu.RLock()
 	paused := d.paused
 	resumeAt := d.resumeAt
+	interval := d.cfg.General.CheckInterval.Duration
 	d.mu.RUnlock()
+	tickDelta, agingShifted := d.beginAgingTick(now, interval)
 
-	if paused && resumeAt != nil && time.Now().After(*resumeAt) {
+	if paused && resumeAt != nil && now.After(*resumeAt) {
 		d.mu.Lock()
 		d.paused = false
 		d.resumeAt = nil
@@ -220,10 +254,68 @@ func (d *Daemon) tick() {
 	focusMode := d.focusMode
 	d.mu.RUnlock()
 
-	if d.tickNative(cfg, focusMode) {
+	if d.tickNativeWithAging(cfg, focusMode, interval, tickDelta, agingShifted) {
 		return
 	}
 	d.tickLegacy(cfg, focusMode)
+}
+
+// beginAgingTick applies watch- and gap-based timer freezing once per tick.
+func (d *Daemon) beginAgingTick(now time.Time, interval time.Duration) (time.Duration, time.Duration) {
+	// Wall time includes macOS sleep even when the monotonic clock does not.
+	wallNow := now.Round(0)
+	if d.lastTick.IsZero() {
+		d.lastTick = wallNow
+		d.consumeWatchAway(wallNow)
+		return 0, 0
+	}
+	previousTick := d.lastTick
+	delta := wallNow.Sub(previousTick)
+	d.lastTick = wallNow
+	if delta <= 0 {
+		return 0, 0
+	}
+	awayIntervals := d.consumeWatchAway(wallNow)
+	if interval > 0 && delta > 3*interval {
+		d.tracker.ShiftLastActiveBefore(delta, previousTick)
+		for _, away := range awayIntervals {
+			d.tracker.FreezeLastActive(away.Start, away.End)
+		}
+		return delta, delta
+	}
+	var awayDuration time.Duration
+	for _, away := range awayIntervals {
+		start := laterTime(away.Start, previousTick)
+		end := earlierTime(away.End, wallNow)
+		if end.After(start) {
+			d.tracker.FreezeLastActive(start, end)
+			awayDuration += end.Sub(start)
+		}
+	}
+	return delta, min(awayDuration, delta)
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func earlierTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func (d *Daemon) freezeIdleTick(snap *Snapshot, interval, delta, alreadyShifted time.Duration) time.Duration {
+	if alreadyShifted >= delta || delta <= 0 || snap.IdleSeconds == nil || *snap.IdleSeconds <= interval.Seconds() {
+		return alreadyShifted
+	}
+	remaining := delta - alreadyShifted
+	d.tracker.ShiftLastActiveBefore(remaining, d.lastTick.Add(-remaining))
+	return delta
 }
 
 // tickNative runs the helper-driven path (per-window tracking). A false
@@ -231,6 +323,16 @@ func (d *Daemon) tick() {
 // helper missing, or helper persistently failing. Transient snapshot errors
 // consume the tick instead so the two paths never both act in one tick.
 func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
+	return d.tickNativeWithAging(cfg, focusMode, cfg.General.CheckInterval.Duration, 0, 0)
+}
+
+func (d *Daemon) tickNativeWithAging(
+	cfg *config.Config,
+	focusMode bool,
+	tickInterval time.Duration,
+	tickDelta time.Duration,
+	agingShifted time.Duration,
+) bool {
 	if !cfg.General.WindowTracking {
 		d.setWindowStatus(resolveWindowStatus(false, true, 0, true))
 		d.exitNative()
@@ -275,8 +377,9 @@ func (d *Daemon) tickNative(cfg *config.Config, focusMode bool) bool {
 		d.nativeActive = true
 		d.tracker.ResetWindows()
 	}
-
+	d.freezeIdleTick(snap, tickInterval, tickDelta, agingShifted)
 	now := time.Now()
+
 	if focusMode {
 		// Window timers can't be maintained while focus mode owns the
 		// screen; drop them so leaving focus mode re-leases instead of

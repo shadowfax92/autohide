@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 const fullSnapshotJSON = `{
   "ax_trusted": true,
   "screen_recording": true,
+  "idle_seconds": 12.5,
   "frontmost": {"pid": 100, "name": "Google Chrome"},
   "focused_window_id": 42,
   "apps": [
@@ -33,6 +36,9 @@ func TestParseSnapshotFull(t *testing.T) {
 	}
 	if snap.ScreenRecording == nil || !*snap.ScreenRecording {
 		t.Errorf("screen_recording = %v, want true", snap.ScreenRecording)
+	}
+	if snap.IdleSeconds == nil || *snap.IdleSeconds != 12.5 {
+		t.Errorf("idle_seconds = %v, want 12.5", snap.IdleSeconds)
 	}
 	if snap.Frontmost.Pid != 100 || snap.Frontmost.Name != "Google Chrome" {
 		t.Errorf("frontmost = %+v", snap.Frontmost)
@@ -64,6 +70,9 @@ func TestParseSnapshotMissingFieldsAreSafe(t *testing.T) {
 	}
 	if snap.ScreenRecording != nil {
 		t.Errorf("absent screen_recording must stay unknown (old helper), got %v", *snap.ScreenRecording)
+	}
+	if snap.IdleSeconds != nil {
+		t.Errorf("absent idle_seconds must stay unknown (old helper), got %v", *snap.IdleSeconds)
 	}
 	if snap.Apps[0].Unhidable != nil {
 		t.Errorf("absent unhidable must stay unknown (old helper), got %v", *snap.Apps[0].Unhidable)
@@ -124,6 +133,9 @@ func TestHelperSnapshotParsesOutput(t *testing.T) {
 	if snap.FocusedWindowID != 42 || len(snap.Windows) != 2 {
 		t.Errorf("snapshot = %+v", snap)
 	}
+	if snap.StartedAt.IsZero() {
+		t.Fatal("helper snapshot must retain its capture start time")
+	}
 }
 
 func TestHelperTimeoutKillsProcess(t *testing.T) {
@@ -155,6 +167,54 @@ func TestHelperFailurePropagatesStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("error %q should carry stderr detail", err)
+	}
+}
+
+func TestHelperWatchStreamsEventsUntilContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	closedPath := filepath.Join(dir, "stdin-closed")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '{"ts":1000,"type":"activate","pid":42,"name":"Slack"}'
+printf '%%s\n' '{"ts":1100,"type":"lock"}'
+while IFS= read -r line; do :; done
+printf closed > %q
+`, closedPath)
+	h := NewHelper(writeFakeHelper(t, dir, script))
+	ctx, cancel := context.WithCancel(context.Background())
+	events := make(chan WatchEvent, 2)
+	done := make(chan error, 1)
+	go func() {
+		done <- h.Watch(ctx, func(event WatchEvent) { events <- event })
+	}()
+
+	first := <-events
+	second := <-events
+	if first.Type != "activate" || first.Pid != 42 || first.Name != "Slack" || first.TS != 1000 {
+		t.Fatalf("first event = %+v", first)
+	}
+	if second.Type != "lock" || second.Pid != 0 || second.Name != "" || second.TS != 1100 {
+		t.Fatalf("second event = %+v", second)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Watch() on cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch() did not stop after cancellation")
+	}
+	if _, err := os.Stat(closedPath); err != nil {
+		t.Fatalf("watch child did not observe stdin EOF: %v", err)
+	}
+}
+
+func TestHelperWatchRejectsMalformedEvents(t *testing.T) {
+	dir := t.TempDir()
+	h := NewHelper(writeFakeHelper(t, dir, "#!/bin/sh\nprintf '%s\\n' '{not-json'\n"))
+	if err := h.Watch(context.Background(), func(WatchEvent) {}); err == nil || !strings.Contains(err.Error(), "parse watch event") {
+		t.Fatalf("Watch() error = %v, want parse watch event", err)
 	}
 }
 

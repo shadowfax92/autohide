@@ -45,10 +45,11 @@ func FormatDuration(d time.Duration) string {
 }
 
 type GeneralConfig struct {
-	DefaultTimeout Duration `toml:"default_timeout"`
-	CheckInterval  Duration `toml:"check_interval"`
-	SystemExclude  []string `toml:"system_exclude"`
-	WindowTracking bool     `toml:"window_tracking"`
+	DefaultTimeout  Duration `toml:"default_timeout"`
+	CheckInterval   Duration `toml:"check_interval"`
+	SystemExclude   []string `toml:"system_exclude"`
+	WindowTracking  bool     `toml:"window_tracking"`
+	HideOtherSpaces bool     `toml:"hide_other_spaces"`
 }
 
 type AppConfig struct {
@@ -75,10 +76,11 @@ type Config struct {
 func Default() *Config {
 	return &Config{
 		General: GeneralConfig{
-			DefaultTimeout: Duration{1 * time.Minute},
-			CheckInterval:  Duration{5 * time.Second},
-			SystemExclude:  []string{"Finder"},
-			WindowTracking: true,
+			DefaultTimeout:  Duration{1 * time.Minute},
+			CheckInterval:   Duration{5 * time.Second},
+			SystemExclude:   []string{"Finder"},
+			WindowTracking:  true,
+			HideOtherSpaces: true,
 		},
 		Apps: map[string]AppConfig{
 			"Finder": {Disabled: true},
