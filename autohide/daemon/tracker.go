@@ -154,8 +154,9 @@ func (t *Tracker) FocusDecisions(cfg *config.Config, snap *Snapshot, now time.Ti
 	if keepRecent < 1 {
 		keepRecent = 1
 	}
-	keep := make(map[string]bool, keepRecent)
-	for _, name := range t.recentAppsLocked(keepRecent) {
+	recent := t.recentAppsLocked(keepRecent)
+	keep := make(map[string]bool, len(recent))
+	for _, name := range recent {
 		keep[name] = true
 	}
 
