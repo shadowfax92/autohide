@@ -70,7 +70,9 @@ final class IPCServer {
         // Tighten permissions before listen(): until then a connect() is refused,
         // so there is no window in which another user could reach the socket.
         guard chmod(path, 0o600) == 0 else { throw StartError.system("chmod \(path)", errno) }
-        guard listen(fd, 16) == 0 else { throw StartError.system("listen", errno) }
+        // A full AF_UNIX backlog refuses the connect outright (the CLI would read
+        // that as "not running"), so take the largest queue the kernel allows.
+        guard listen(fd, SOMAXCONN) == 0 else { throw StartError.system("listen", errno) }
         // Non-blocking so a spurious readiness event cannot park the queue in accept().
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
 

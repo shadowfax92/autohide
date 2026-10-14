@@ -263,9 +263,12 @@ final class Engine: EngineControl {
                 && app.pid != observation.frontmost && app.pid != state.protected
                 && config.effectiveTimeout(for: app.identity) != nil
         }
-        let issued = targets.filter { requestHide($0.pid, observation: observation, now: now, trigger: "hide-others") }
-        Log.info("hide-others: \(issued.count) of \(observation.apps.count) apps")
-        return issued.count
+        var issued = 0
+        for app in targets where requestHide(app.pid, observation: observation, now: now, trigger: "hide-others") {
+            issued += 1
+        }
+        Log.info("hide-others: issued \(issued) hides (\(observation.apps.count) apps seen)")
+        return issued
     }
 
     func reloadConfig() {
@@ -295,7 +298,13 @@ final class Engine: EngineControl {
         case .returned(let reason): Log.info("returned: \(reason.rawValue)")
         default: Log.debug("event \(event)")
         }
+        let wasAway = state.isAway
         state.apply(event, at: now)
+        // An activation is proof the user is back (design §7.2), even if the
+        // matching wake/unlock notification never arrived.
+        if wasAway, !state.isAway, case .activated = event {
+            Log.info("returned: activation cleared away")
+        }
         evaluate(reason: "\(event)")
     }
 
