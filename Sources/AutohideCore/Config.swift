@@ -24,12 +24,23 @@ public struct AppIdentity: Hashable, Codable {
 public enum AppMatch {
     /// Lowercased, whitespace-trimmed, Unicode category Cf removed (U+200E, U+200B, U+FEFF…).
     public static func normalize(_ text: String) -> String {
-        preconditionFailure("unimplemented")
+        clean(text).lowercased()
     }
 
     /// An entry matches when it normalizes equal to the app's name or bundle ID.
+    /// A blank entry matches nothing, so a stray "" in config cannot exempt an
+    /// app whose name failed to resolve.
     public static func matches(_ entry: String, _ app: AppIdentity) -> Bool {
-        preconditionFailure("unimplemented")
+        let key = normalize(entry)
+        guard !key.isEmpty else { return false }
+        return key == normalize(app.name) || app.bundleID.map(normalize) == key
+    }
+
+    /// Format characters stripped and whitespace trimmed, case kept. This is
+    /// the form a name is stored in when the user exempts it.
+    static func clean(_ text: String) -> String {
+        let scalars = text.unicodeScalars.filter { $0.properties.generalCategory != .format }
+        return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -58,16 +69,36 @@ public struct Config: Equatable {
     /// nil = never hide (exempt, or outside a non-empty onlyApps).
     /// Otherwise the per-app override or the default, clamped to minimumTimeout.
     public func effectiveTimeout(for app: AppIdentity) -> TimeInterval? {
-        preconditionFailure("unimplemented")
+        if isExempt(app) { return nil }
+        if !onlyApps.isEmpty && !onlyApps.contains(where: { AppMatch.matches($0, app) }) { return nil }
+        // Sorted so an app matched by both its name and its bundle ID gets the
+        // same override on every run (dictionary order is random per process).
+        let override = appTimeouts.keys.sorted()
+            .first { AppMatch.matches($0, app) }
+            .flatMap { appTimeouts[$0] }
+        return max(override ?? timeout, Config.minimumTimeout)
     }
 
     public func isExempt(_ app: AppIdentity) -> Bool {
-        preconditionFailure("unimplemented")
+        exempt.contains { AppMatch.matches($0, app) }
     }
 
     /// Adds/removes an exemption by normalized match; keeps the list deduplicated and sorted.
+    /// Added names are stored cleaned of format characters, so a menu click on
+    /// "\u{200E}WhatsApp" writes a plain "WhatsApp" to config.json.
     public mutating func setExempt(_ app: String, _ exempt: Bool) {
-        preconditionFailure("unimplemented")
+        let key = AppMatch.normalize(app)
+        var entries = self.exempt
+        if exempt {
+            if !key.isEmpty { entries.append(AppMatch.clean(app)) }
+        } else {
+            entries.removeAll { AppMatch.normalize($0) == key }
+        }
+
+        var seen = Set<String>()
+        self.exempt = entries
+            .filter { seen.insert(AppMatch.normalize($0)).inserted }
+            .sorted { (AppMatch.normalize($0), $0) < (AppMatch.normalize($1), $1) }
     }
 }
 
