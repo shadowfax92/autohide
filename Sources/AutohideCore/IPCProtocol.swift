@@ -93,12 +93,41 @@ public enum IPC {
         }
     }
 
-    /// One line of JSON terminated by "\n".
+    /// One line of JSON terminated by "\n". Compact output keeps it one line:
+    /// JSON escapes any newline inside a string, so the only raw "\n" is the
+    /// terminator the reader waits for.
     public static func encodeLine<T: Encodable>(_ value: T) throws -> Data {
-        preconditionFailure("unimplemented")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.formatted(fractionalISO8601))
+        }
+        var data = try encoder.encode(value)
+        data.append(0x0A)
+        return data
     }
 
+    /// Decodes the first line of `data`; the terminator is optional, so a reader
+    /// that hit EOF before "\n" still decodes.
     public static func decodeLine<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        preconditionFailure("unimplemented")
+        let line = data.firstIndex(of: 0x0A).map { data[data.startIndex..<$0] } ?? data[...]
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let text = try container.decode(String.self)
+            if let date = try? fractionalISO8601.parse(text) { return date }
+            if let date = try? wholeISO8601.parse(text) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "not an ISO-8601 date: \(text)")
+        }
+        return try decoder.decode(T.self, from: Data(line))
     }
+
+    // Millisecond ISO-8601 in UTC ("1970-01-12T13:46:40.000Z"). JSONEncoder's
+    // built-in .iso8601 drops fractions, which would make a pause deadline or
+    // startedAt differ after a round trip. Whole-second dates are still
+    // accepted so a hand-written request decodes. FormatStyles are values, so
+    // sharing them across the socket thread and main is safe.
+    private static let fractionalISO8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let wholeISO8601 = Date.ISO8601FormatStyle()
 }
