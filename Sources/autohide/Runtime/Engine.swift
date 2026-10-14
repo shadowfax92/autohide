@@ -88,7 +88,7 @@ final class Engine: EngineControl {
         evaluate(reason: "start")
 
         let heartbeat = Timer(timeInterval: Self.heartbeat, repeats: true) { [weak self] _ in
-            self?.evaluate(reason: "heartbeat")
+            self?.heartbeatTick()
         }
         // 10% tolerance lets macOS coalesce this wake-up with others.
         heartbeat.tolerance = Self.heartbeat / 10
@@ -306,6 +306,20 @@ final class Engine: EngineControl {
             Log.info("returned: activation cleared away")
         }
         evaluate(reason: "\(event)")
+    }
+
+    /// §3 step 3 skips the probe while away, which would leave a missed
+    /// screenIsUnlocked stuck until the next app switch. So when the lock is the
+    /// only away reason, the heartbeat reads the probe's session lock state, and an
+    /// unlocked screen counts as the return (fresh timeouts). While still locked
+    /// the ledger is left alone. Sleep and display sleep still end only by event
+    /// or activation: their probe answers mean nothing while asleep.
+    private func heartbeatTick() {
+        if running, state.awayReasons == [.lock], !probe.observe().screenLocked {
+            Log.info("returned: lock (heartbeat saw the screen unlocked; the notification was missed)")
+            state.apply(.returned(.lock), at: Date())
+        }
+        evaluate(reason: "heartbeat")
     }
 
     /// One one-shot timer, replaced on every evaluate, so there is never more than
