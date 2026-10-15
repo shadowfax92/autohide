@@ -80,12 +80,25 @@ public struct AppTimer: Equatable {
     public var lastActive: Date
     public var wasVisible: Bool
     public var refusedUntil: Date?
+    /// Bumped by every activation and unhide of this app. The Engine records it
+    /// when it issues a hide, and markRefused drops a refusal whose attempt
+    /// predates the current value (see markRefused).
+    public var activationGeneration: Int
 
-    public init(lastActive: Date, wasVisible: Bool = false, refusedUntil: Date? = nil) {
+    public init(lastActive: Date, wasVisible: Bool = false, refusedUntil: Date? = nil,
+                activationGeneration: Int = 0) {
         self.lastActive = lastActive
         self.wasVisible = wasVisible
         self.refusedUntil = refusedUntil
+        self.activationGeneration = activationGeneration
     }
+}
+
+/// Why the Engine asked for a hide. A timed hide must still be `.due` when it
+/// is issued; a hide-others hide needs only Policy.mayHideNow.
+public enum HideTrigger: String, Equatable {
+    case timeout
+    case hideOthers = "hide-others"
 }
 
 /// All mutable timer state. Owned by the Engine and mutated only on main.
@@ -119,12 +132,12 @@ public struct PolicyState: Equatable {
     }
 
     /// activated(p): timers[old protected].lastActive = now; protected = p;
-    ///               timers[p].lastActive = now, refusedUntil = nil;
+    ///               timers[p].lastActive = now, refusedUntil = nil, activationGeneration += 1;
     ///               awayReasons.removeAll() (user is clearly back) — with refresh if it was away.
     /// launched(p):  timers[p] = AppTimer(lastActive: now)
     /// terminated(p): remove timer; if protected == p, protected = nil
     /// hidden(p):    timers[p].wasVisible = false
-    /// unhidden(p):  timers[p].lastActive = now, refusedUntil = nil
+    /// unhidden(p):  timers[p].lastActive = now, refusedUntil = nil, activationGeneration += 1
     /// spaceChanged: no direct change (the next observe applies the appearance rule)
     /// away(r):      insert r
     /// returned(r):  remove r; if now empty → refreshAll(now)
@@ -146,6 +159,7 @@ public struct PolicyState: Equatable {
             protected = pid
             timers[pid]?.lastActive = now
             timers[pid]?.refusedUntil = nil
+            timers[pid]?.activationGeneration += 1
         case .launched(let pid):
             timers[pid] = AppTimer(lastActive: now)
         case .terminated(let pid):
@@ -156,6 +170,7 @@ public struct PolicyState: Equatable {
         case .unhidden(let pid):
             timers[pid]?.lastActive = now
             timers[pid]?.refusedUntil = nil
+            timers[pid]?.activationGeneration += 1
         case .spaceChanged:
             break
         case .away(let reason):
@@ -245,15 +260,50 @@ public struct PolicyState: Equatable {
         }
     }
 
-    /// refusedUntil = now + refusalBackoff, unless `pid` is the protected app.
-    /// Hider reports a refusal asynchronously (it confirms for up to ~2 s),
-    /// so it can land after the user switched to that very app. A refusal backs
-    /// off "until the app's next activation", and that activation has already
-    /// happened; recording it now would keep the app on screen for five
-    /// minutes after the user leaves it.
-    public mutating func markRefused(_ pid: PID, at now: Date) {
-        guard pid != protected else { return }
+    /// refusedUntil = now + refusalBackoff, unless the app was activated or
+    /// unhidden after the refused hide was issued. `generation` is the app's
+    /// activationGeneration captured when the Engine issued the hide.
+    ///
+    /// Hider reports a refusal asynchronously (it confirms for up to 1 s), so
+    /// it can land after the user switched to that very app, and even after
+    /// they left it again. A refusal backs off "until the app's next
+    /// activation", and that activation has already happened; recording it
+    /// would keep the app on screen for five minutes after the user leaves it.
+    /// Whether the app is protected when the refusal lands cannot tell, since
+    /// the user may have come and gone; a changed generation can. Returns
+    /// whether the backoff was recorded.
+    @discardableResult
+    public mutating func markRefused(_ pid: PID, generation: Int?, at now: Date) -> Bool {
+        guard let timer = timers[pid], timer.activationGeneration == generation else { return false }
         timers[pid]?.refusedUntil = now + PolicyState.refusalBackoff
+        return true
+    }
+
+    /// The last word on a queued hide, asked on the main-run-loop turn that
+    /// issues it, against a probe taken on that turn (Engine.stillEligible).
+    /// Other main-thread work can run in the turns between deciding and
+    /// issuing, so focus, protection, suspensions, config, and the app's own
+    /// visibility are judged again here by the same rules as `decide` and
+    /// `mayHideNow`.
+    ///
+    /// The probe is not otherwise fed into the ledger: the next evaluate's
+    /// observe does that. The one exception is a locked screen, recorded as
+    /// `.lock` before withdrawing. Forgetting it would let an unlock that no
+    /// evaluation saw skip the return, so apps that aged behind the lock
+    /// screen would hide without a fresh timeout.
+    public mutating func recheckHide(_ pid: PID, trigger: HideTrigger, observation: Observation,
+                                     config: Config, now: Date) -> Bool {
+        if observation.screenLocked {
+            apply(.away(.lock), at: now)
+            return false
+        }
+        guard !isAway, let app = observation.apps.first(where: { $0.pid == pid }) else { return false }
+        switch trigger {
+        case .timeout:
+            return Policy.status(of: app, state: self, observation: observation, config: config, now: now) == .due
+        case .hideOthers:
+            return Policy.mayHideNow(app, state: self, observation: observation, config: config, now: now)
+        }
     }
 
     /// A config change that makes an app hideable (its exemption removed, or
