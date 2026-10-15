@@ -214,20 +214,6 @@ public struct PolicyState: Equatable {
         }
     }
 
-    /// refusedUntil = now + refusalBackoff, unless `pid` is the protected app.
-    /// Hider reports a refusal asynchronously (it confirms for up to ~1.5 s),
-    /// so it can land after the user switched to that very app. A refusal backs
-    /// off "until the app's next activation", and that activation has already
-    /// happened; recording it now would keep the app on screen for five
-    /// minutes after the user leaves it.
-    private mutating func stampAway(_ now: Date) {
-        if awayReasons.isEmpty {
-            awaySince = nil
-        } else if awaySince == nil {
-            awaySince = now
-        }
-    }
-
     /// The heartbeat's answer to a missed return notification (didWake,
     /// screensDidWake, screenIsUnlocked, session switched back): without it,
     /// §3 step 3 never probes while away and hiding stops until the next app
@@ -250,6 +236,21 @@ public struct PolicyState: Equatable {
         return cleared
     }
 
+    /// Keeps awaySince in step with awayReasons; apply and observe call it last.
+    private mutating func stampAway(_ now: Date) {
+        if awayReasons.isEmpty {
+            awaySince = nil
+        } else if awaySince == nil {
+            awaySince = now
+        }
+    }
+
+    /// refusedUntil = now + refusalBackoff, unless `pid` is the protected app.
+    /// Hider reports a refusal asynchronously (it confirms for up to ~2 s),
+    /// so it can land after the user switched to that very app. A refusal backs
+    /// off "until the app's next activation", and that activation has already
+    /// happened; recording it now would keep the app on screen for five
+    /// minutes after the user leaves it.
     public mutating func markRefused(_ pid: PID, at now: Date) {
         guard pid != protected else { return }
         timers[pid]?.refusedUntil = now + PolicyState.refusalBackoff

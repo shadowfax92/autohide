@@ -457,8 +457,8 @@ final class Engine: EngineControl {
     /// Hider's last-moment check. It takes a fresh probe rather than reusing the
     /// deciding evaluation's: focus, protection, pause, away or lock, the
     /// fullscreen Space, config, and the app's own visibility can all change in
-    /// the turns between deciding and acting. Read-only towards the ledger, so it
-    /// never moves a timer; the next evaluate reconciles as usual.
+    /// the turns between deciding and acting. The probe is not fed into the
+    /// ledger (no state.observe); the next evaluate reconciles as usual.
     private func stillEligible(_ pid: PID, _ trigger: HideTrigger) -> Bool {
         guard running, !state.isAway else { return false }
         reloadConfigIfChanged()
