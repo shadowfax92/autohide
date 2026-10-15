@@ -438,6 +438,7 @@ final class Engine: EngineControl {
         let identity = lastObservation?.apps.first { $0.pid == pid }?.identity ?? AppIdentity(name: "pid \(pid)")
         let idle = state.timers[pid].map { now.timeIntervalSince($0.lastActive) }
         let timeout = config.effectiveTimeout(for: identity)
+        Log.debug("hide pid=\(pid) issued by=\(trigger.rawValue) (\(queuedHides.count) still queued)")
 
         // Hider asks stillEligible on this turn right before hide(), and again
         // right before any AX fallback, each in the same turn as the act. That is
