@@ -187,7 +187,9 @@ cmd_agent_stop() {
 make_fixtures() {
     echo "autohide e2e fixture" >"$DIR/e2e.txt"
     [ -f "$DIR/e2e.png" ] ||
-        sips -s format png -z 400 400 "$REPO/assets/autohide.icns" --out "$DIR/e2e.png" >/dev/null
+        sips -s format png -z 400 400 \
+            /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns \
+            --out "$DIR/e2e.png" >/dev/null
 }
 
 # Opens one app in the background. If it was not already running, records the

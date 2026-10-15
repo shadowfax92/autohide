@@ -2,9 +2,16 @@
 #
 #   make build     release build (.build/release/autohide)
 #   make test      unit tests (AutohideCore)
-#   make bundle    build/autohide.app, signed with a stable identity
+#   make bundle    build/autohide.app with its compiled icon, signed with a stable identity
 #   make install   replace /Applications/autohide.app and (re)start the LaunchAgent
 #   make uninstall stop the LaunchAgent and remove the app; ~/.config/autohide is kept
+#
+# The app icon's source is assets/AppIcon.icon, an Icon Composer document
+# (icon.json plus SVG layers). `bundle` compiles it with Xcode 26's actool into
+# Contents/Resources: Assets.car, which macOS 26 draws with the system's glass,
+# squircle mask and dark/tinted styles, and AppIcon.icns, the flattened fallback
+# that macOS 13-15 read. build and test need only Swift; bundle and install
+# need Xcode 26.
 #
 # Signing is what keeps permissions alive. An ad-hoc signature (`-`) makes the
 # designated requirement the binary's CDHash, so every rebuild silently voids
@@ -21,11 +28,19 @@ BUILD_DIR   := $(CURDIR)/build
 BUNDLE      := $(BUILD_DIR)/$(APP_NAME).app
 RELEASE_BIN := .build/release/$(APP_NAME)
 
+# Absolute on purpose: actool hands the .icon to a separate exporter process
+# that cannot open a relative path, and then writes nothing yet still exits 0.
+ICON_SRC    := $(CURDIR)/assets/AppIcon.icon
+# actool's by-products stay outside the bundle, where they cannot break its seal.
+ICON_PLIST  := $(BUILD_DIR)/AppIcon-partial.plist
+ACTOOL_LOG  := $(BUILD_DIR)/actool.log
+
 APP_DIR     := /Applications/$(APP_NAME).app
 APP_BIN     := $(APP_DIR)/Contents/MacOS/$(APP_NAME)
 CLI_LINK    := $(HOME)/go/bin/$(APP_NAME)
 AGENT_LABEL := com.autohide.daemon
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT_LABEL).plist
+LSREGISTER  := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 # First matching identity name from the keychain, or empty.
 find_identity = $(shell security find-identity -v -p codesigning 2>/dev/null \
@@ -36,7 +51,7 @@ find_identity = $(shell security find-identity -v -p codesigning 2>/dev/null \
 # keychain lookup run once, and only for targets that sign.
 SIGN_ID ?= $(eval SIGN_ID := $(or $(call find_identity,Developer ID Application),$(call find_identity,Apple Development),-))$(SIGN_ID)
 
-.PHONY: all build test bundle install uninstall icon clean
+.PHONY: all build test bundle install uninstall clean
 
 all: build
 
@@ -48,11 +63,34 @@ test:
 
 # The bundle is rebuilt from scratch each time: a stale extra file inside it
 # would break the signature seal that `codesign --verify --strict` checks.
+#
+# actool's exit status is not trusted. It exits 0 having written nothing when
+# its icon exporter fails (a malformed icon.json, a layer naming a missing SVG),
+# and an Xcode older than 26 cannot read a .icon at all, so the icon step is
+# judged by whether Assets.car and AppIcon.icns exist; Info.plist.in points at
+# them through CFBundleIconName and CFBundleIconFile. A clean compile logs only
+# its output list, so any warning or notice is printed even when the outputs
+# exist: an edited icon cannot degrade quietly.
 bundle: build
 	rm -rf $(BUNDLE)
 	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(RELEASE_BIN) $(BUNDLE)/Contents/MacOS/$(APP_NAME)
-	cp assets/$(APP_NAME).icns $(BUNDLE)/Contents/Resources/$(APP_NAME).icns
+	@echo "actool: compiling assets/AppIcon.icon"
+	@xcrun actool $(ICON_SRC) --compile $(BUNDLE)/Contents/Resources \
+		--platform macosx --minimum-deployment-target 13.0 --app-icon AppIcon \
+		--target-device mac --output-partial-info-plist $(ICON_PLIST) \
+		>$(ACTOOL_LOG) 2>&1; \
+	if [ ! -s $(BUNDLE)/Contents/Resources/Assets.car ] \
+	   || [ ! -s $(BUNDLE)/Contents/Resources/AppIcon.icns ]; then \
+		cat $(ACTOOL_LOG) >&2; \
+		echo "error: actool could not compile assets/AppIcon.icon (its output, if any, is above)." >&2; \
+		echo "       A .icon needs actool from Xcode 26 or later; the active developer dir is $$(xcode-select -p 2>/dev/null || echo unset)." >&2; \
+		echo "       Select Xcode 26 with: sudo xcode-select -s /Applications/Xcode.app" >&2; \
+		exit 1; \
+	fi; \
+	if grep -qE 'com\.apple\.actool\.(errors|warnings|notices)' $(ACTOOL_LOG); then \
+		cat $(ACTOOL_LOG) >&2; \
+	fi
 	sed 's/@VERSION@/$(VERSION)/g' assets/Info.plist.in > $(BUNDLE)/Contents/Info.plist
 	plutil -lint -s $(BUNDLE)/Contents/Info.plist
 	@if [ "$(SIGN_ID)" = "-" ]; then \
@@ -77,11 +115,16 @@ bundle: build
 #      autohide-helper, autohide-ui). `[.]` keeps the pattern from matching
 #      this recipe's own shell, whose command line contains the pattern text;
 #   3. replace the bundle wholesale with ditto (no stale files, intact seal);
-#   4. the new binary writes its own plist and bootstraps it.
+#   4. touch the bundle and force LaunchServices to re-register it. It does not
+#      notice that a bundle replaced in place has a new icon, so Finder and the
+#      Dock would keep drawing the cached old one;
+#   5. the new binary writes its own plist and bootstraps it.
 install: bundle
 	-launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null
 	-pkill -f '/Applications/$(APP_NAME)[.]app/Contents/MacOS/'
 	rm -rf $(APP_DIR) && ditto $(BUNDLE) $(APP_DIR)
+	touch $(APP_DIR)
+	$(LSREGISTER) -f $(APP_DIR)
 	mkdir -p $(dir $(CLI_LINK))
 	ln -sf $(APP_BIN) $(CLI_LINK)
 	$(APP_BIN) install
@@ -96,13 +139,6 @@ uninstall:
 	-[ -L $(CLI_LINK) ] && rm -f $(CLI_LINK)
 	rm -rf $(APP_DIR)
 	@echo "Removed $(APP_DIR); config and logs are kept in ~/.config/autohide"
-
-# Regenerates the committed assets/autohide.icns from scripts/make-icon.swift.
-icon:
-	@mkdir -p $(BUILD_DIR)
-	rm -rf $(BUILD_DIR)/$(APP_NAME).iconset
-	swift scripts/make-icon.swift $(BUILD_DIR)/$(APP_NAME).iconset
-	iconutil -c icns $(BUILD_DIR)/$(APP_NAME).iconset -o assets/$(APP_NAME).icns
 
 clean:
 	rm -rf .build $(BUILD_DIR)
