@@ -8,8 +8,9 @@ import AutohideCore
 /// The daemon end of `autohide status|list|pause|…`. One request per connection
 /// (IPCProtocol.swift): read one JSON line, run the handler on main, write one
 /// JSON line, close. Connections are served one at a time on a private serial
-/// queue; a client that stalls is cut off by a 2 s socket timeout, so it can
-/// delay the next request but never wedge the daemon.
+/// queue, so each one gets a single 2 s deadline for the whole exchange. A
+/// client that stalls or trickles bytes is cut off at that deadline: it can
+/// delay the requests queued behind it by at most 2 s, and never wedge the daemon.
 final class IPCServer {
     enum StartError: Error, CustomStringConvertible {
         case pathTooLong(String)
@@ -25,6 +26,9 @@ final class IPCServer {
         }
     }
 
+    /// Budget for one connection, from the start of serving it to the last byte
+    /// of the reply: read, the handler on main, and write. Matches the CLI's own
+    /// 2 s wait, so a reply that misses it has no reader left anyway.
     static let ioTimeout: TimeInterval = 2
     static let maxRequestBytes = 64 * 1024
 
@@ -122,11 +126,15 @@ final class IPCServer {
     }
 
     private func serve(_ client: Int32) {
+        // Starts before the first recv. SO_RCVTIMEO/SO_SNDTIMEO alone bound
+        // each call separately, so a client sending one byte per second would
+        // restart the clock on every byte and hold this serial queue for hours.
+        let deadline = Deadline(after: Self.ioTimeout)
         configureClient(client)
         var request: IPC.Request?
         let response: IPC.Response
 
-        switch readLine(from: client) {
+        switch readLine(from: client, before: deadline) {
         case .failure(let failure):
             Log.warn("ipc: \(failure.reason)")
             response = IPC.Response(ok: false, error: failure.reason)
@@ -137,6 +145,8 @@ final class IPCServer {
                 // Thread hop: Engine state is main-thread only. `sync` makes this
                 // connection's reply the handler's result. It cannot deadlock
                 // because main never waits on this queue (stop() only cancels).
+                // It cannot be interrupted either, so time spent here comes out
+                // of the deadline and only the write is cut short.
                 response = DispatchQueue.main.sync { handler(decoded) }
             } catch {
                 Log.warn("ipc: malformed request (\(line.count) bytes): \(error)")
@@ -146,7 +156,7 @@ final class IPCServer {
 
         let data = (try? IPC.encodeLine(response))
             ?? Data("{\"ok\":false,\"error\":\"internal: response encoding failed\"}\n".utf8)
-        writeAll(data, to: client)
+        writeAll(data, to: client, before: deadline)
         close(client)
         if let request { onResponseSent?(request) }
     }
@@ -160,19 +170,45 @@ final class IPCServer {
         // a SIGPIPE that kills the daemon.
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: Int(Self.ioTimeout), tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    /// One connection's time budget on a monotonic clock (wall-clock changes
+    /// cannot stretch or skip it). Before every recv and send the matching
+    /// socket timeout is re-armed with whatever is left, so no single call can
+    /// outlive the deadline and a stream of bytes cannot extend it.
+    private struct Deadline {
+        private let end: ContinuousClock.Instant
+
+        init(after seconds: TimeInterval) {
+            end = .now + .seconds(seconds)
+        }
+
+        /// Sets `option` (SO_RCVTIMEO or SO_SNDTIMEO) to the time left. false
+        /// once the deadline has passed, or if the option could not be set:
+        /// either way the caller must not block on `fd` again.
+        func arm(_ fd: Int32, _ option: Int32) -> Bool {
+            let left = ContinuousClock.now.duration(to: end)
+            guard left > .zero else { return false }
+            let (seconds, attoseconds) = left.components
+            // A zero timeval means "no timeout" to the kernel, so a remainder
+            // under 1 µs must round up, or the next call would block forever.
+            let micros = max(attoseconds / 1_000_000_000_000, seconds == 0 ? 1 : 0)
+            var timeout = timeval(tv_sec: Int(seconds), tv_usec: Int32(micros))
+            return setsockopt(fd, SOL_SOCKET, option, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
+        }
     }
 
     private struct ReadFailure: Error { let reason: String }
 
     /// Bytes up to (not including) the first newline. A client that closes its
-    /// write side without a newline still gets its bytes decoded.
-    private func readLine(from fd: Int32) -> Result<Data, ReadFailure> {
+    /// write side without a newline still gets its bytes decoded. Gives up at
+    /// `deadline` even while bytes are still arriving.
+    private func readLine(from fd: Int32, before deadline: Deadline) -> Result<Data, ReadFailure> {
+        let timedOut = ReadFailure(reason: "no complete request line within \(Self.ioTimeout)s")
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
         while buffer.count <= Self.maxRequestBytes {
+            guard deadline.arm(fd, SO_RCVTIMEO) else { return .failure(timedOut) }
             let n = chunk.withUnsafeMutableBytes { recv(fd, $0.baseAddress, $0.count, 0) }
             if n > 0 {
                 buffer.append(contentsOf: chunk[0..<n])
@@ -184,7 +220,7 @@ final class IPCServer {
             } else if errno == EINTR {
                 continue
             } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                return .failure(ReadFailure(reason: "timed out waiting for a request line"))
+                return .failure(timedOut)
             } else {
                 return .failure(ReadFailure(reason: "read failed: \(String(cString: strerror(errno)))"))
             }
@@ -192,12 +228,17 @@ final class IPCServer {
         return .failure(ReadFailure(reason: "request exceeds \(Self.maxRequestBytes) bytes"))
     }
 
-    private func writeAll(_ data: Data, to fd: Int32) {
+    /// Best effort: gives up when the client has gone away or stops reading.
+    /// Past the deadline it never waits: sends become non-blocking, so a short
+    /// reply (such as the timeout error to a trickling client) still lands if
+    /// the socket buffer has room, and otherwise the connection just closes.
+    private func writeAll(_ data: Data, to fd: Int32, before deadline: Deadline) {
         data.withUnsafeBytes { raw in
             guard var cursor = raw.baseAddress else { return }
             var remaining = raw.count
             while remaining > 0 {
-                let n = send(fd, cursor, remaining, 0)
+                let flags = deadline.arm(fd, SO_SNDTIMEO) ? 0 : MSG_DONTWAIT
+                let n = send(fd, cursor, remaining, flags)
                 if n < 0 {
                     if errno == EINTR { continue }
                     return   // the client went away or timed out; nothing else to do
