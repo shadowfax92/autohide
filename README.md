@@ -40,7 +40,8 @@ the old Go version and stops its daemon and helper.
 
 ## Use
 
-Use the menu-bar icon (an eye with a slash through it) or the CLI:
+Use the menu-bar icon (a window with two fainter windows receding behind it;
+while paused, a pause mark replaces them) or the CLI:
 
 ```bash
 autohide status                  # is it running, and with what settings
@@ -148,3 +149,12 @@ draws with the system's glass and dark/tinted styles, plus an `AppIcon.icns`
 for macOS 13–15. This needs Xcode 26: without it `make bundle` stops with an
 error. `make install` re-registers the app so Finder and the Dock show the new
 icon.
+
+The menu-bar glyphs live in `assets/MenuBar.xcassets` as two 18×18 template
+SVGs, `menubar-active` and `menubar-paused`, kept as vectors. Template means
+macOS uses only their alpha and supplies the colour: the window in use is
+opaque, the two behind it are 55% and 25% opaque, and the whole glyph follows
+light, dark and tinted menu bars. The same `actool` call compiles them into
+`Assets.car`. A binary run outside the
+bundle (`.build/release/autohide`) has no `Assets.car` and falls back to the SF
+Symbols `eye.slash` and `pause.circle`.

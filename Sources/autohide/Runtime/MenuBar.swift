@@ -1,4 +1,6 @@
-// MenuBar.swift — NSStatusItem (SF Symbol "eye.slash"; "pause.circle" while paused).
+// MenuBar.swift — NSStatusItem. Its icon is the Recede template glyph, "menubar-active" or
+// "menubar-paused" from the bundle's Assets.car (source: assets/MenuBar.xcassets, compiled by
+// `make bundle`); outside the app bundle it falls back to SF Symbols "eye.slash" / "pause.circle".
 // The menu is rebuilt in menuNeedsUpdate (no timers). Items: status line; Pause 30 min /
 // Pause 1 hour / Pause until resumed | Resume; Hide others now; Timeout ▸ 30s 1m 2m 5m 10m (✓ current);
 // Never hide "<protected app>" (toggle); Exempt apps ▸ (✓ each, click removes); Open config;
@@ -45,11 +47,31 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     private func refreshIcon() {
         let paused = control.statusPayload().paused
-        let image = NSImage(systemSymbolName: paused ? "pause.circle" : "eye.slash",
-                            accessibilityDescription: paused ? "autohide (paused)" : "autohide")
-        image?.isTemplate = true
-        statusItem?.button?.image = image
+        statusItem?.button?.image = Self.icon(paused: paused)
         statusItem?.button?.toolTip = paused ? "autohide is paused" : "autohide"
+    }
+
+    /// The status item image for a pause state. The glyphs are template images: the menu
+    /// bar keeps their alpha (the receding windows are drawn at 55% and 25%) and supplies
+    /// the colour for light, dark and tinted bars. A bare `.build/release/autohide` has no
+    /// bundle and so no Assets.car; NSImage(named:) then returns nil and the SF Symbols stand in.
+    private static func icon(paused: Bool) -> NSImage? {
+        let description = paused ? "autohide (paused)" : "autohide"
+        let image: NSImage
+        if let glyph = NSImage(named: paused ? "menubar-paused" : "menubar-active") {
+            // NSImage(named:) hands back a shared, cached instance. These settings are the
+            // same on every call, so applying them to it is idempotent.
+            glyph.size = NSSize(width: 18, height: 18)
+            glyph.accessibilityDescription = description
+            image = glyph
+        } else if let symbol = NSImage(systemSymbolName: paused ? "pause.circle" : "eye.slash",
+                                       accessibilityDescription: description) {
+            image = symbol
+        } else {
+            return nil
+        }
+        image.isTemplate = true
+        return image
     }
 
     // MARK: NSMenuDelegate
