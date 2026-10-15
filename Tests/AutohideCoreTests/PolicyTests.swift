@@ -47,6 +47,19 @@ private struct Desk {
 
     func lastActive(_ pid: PID) -> Date? { state.timers[pid]?.lastActive }
 
+    /// What the Engine captures when it issues a hide for `pid`.
+    func generation(_ pid: PID) -> Int? { state.timers[pid]?.activationGeneration }
+
+    /// A refusal for a hide issued right now (no activation in between).
+    mutating func refuse(_ pid: PID) {
+        state.markRefused(pid, generation: generation(pid), at: now)
+    }
+
+    /// The issuing turn's last check, against the current observation.
+    mutating func recheck(_ pid: PID, _ trigger: HideTrigger = .timeout) -> Bool {
+        state.recheckHide(pid, trigger: trigger, observation: observation, config: config, now: now)
+    }
+
     mutating func update(_ pid: PID, hidden: Bool? = nil, visible: Bool? = nil) {
         let index = apps.firstIndex { $0.pid == pid }!
         if let hidden { apps[index].isHidden = hidden }
@@ -273,6 +286,49 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: t0 + 180))
     }
 
+    func testB06_ALockSeenOnlyByTheIssuingRecheckIsRecordedAndTheUnlockGivesFreshTimeouts() {
+        // The hides were queued unlocked, the screen locked before they were
+        // issued, and the lock notification was missed. The recheck must
+        // record the lock, not just withdraw, so the unlock is a return with
+        // fresh timeouts.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        XCTAssertEqual(desk.evaluate().hide, [notes, preview])
+        desk.locked = true
+        XCTAssertFalse(desk.recheck(notes))
+        XCTAssertEqual(desk.state.awayReasons, [.lock])
+        XCTAssertFalse(desk.recheck(preview))
+        desk.at(63)
+        desk.locked = false
+        // The unlock notification is missed too; the heartbeat proves the return.
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: nil), at: desk.now), [.lock])
+        XCTAssertEqual(desk.lastActive(notes), t0 + 63)
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: t0 + 123), "no hides on unlock")
+    }
+
+    func testRecheckWithdrawsWhatTheIssuingTurnNoLongerAllows() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(30)
+        XCTAssertFalse(desk.recheck(notes), "a timed hide must still be due")
+        XCTAssertTrue(desk.recheck(notes, .hideOthers), "hide-others ignores the timer")
+        desk.at(60)
+        XCTAssertTrue(desk.recheck(notes))
+        desk.frontmost = notes
+        XCTAssertFalse(desk.recheck(notes), "the fresh probe's frontmost")
+        XCTAssertFalse(desk.state.isAway, "only a lock is recorded")
+        XCTAssertEqual(desk.state.protected, terminal, "the probe is not fed into the ledger")
+        desk.frontmost = terminal
+        desk.update(notes, hidden: true)
+        XCTAssertFalse(desk.recheck(notes, .hideOthers), "already hidden")
+        XCTAssertFalse(desk.recheck(chess, .hideOthers), "not running")
+        desk.state.pause(until: nil, at: desk.now)
+        XCTAssertFalse(desk.recheck(preview))
+        XCTAssertFalse(desk.recheck(preview, .hideOthers))
+        XCTAssertFalse(desk.state.isAway)
+    }
+
     // MARK: - Missed return notifications (PolicyState.reconcileAway)
 
     private func present(lastInput: Date?, onConsole: Bool = true, locked: Bool = false,
@@ -390,7 +446,7 @@ final class PolicyTests: XCTestCase {
         _ = desk.evaluate()
         desk.at(60)
         XCTAssertEqual(desk.evaluate().hide, [notes, preview])
-        desk.state.markRefused(notes, at: desk.now)
+        desk.refuse(notes)
         XCTAssertEqual(desk.state.timers[notes]?.refusedUntil, t0 + 60 + PolicyState.refusalBackoff)
         desk.at(61)
         XCTAssertEqual(desk.evaluate(), Decision(hide: [preview], nextCheck: t0 + 360))
@@ -402,12 +458,12 @@ final class PolicyTests: XCTestCase {
     func testB08_ActivationClearsARefusal() {
         var desk = desk()
         _ = desk.evaluate()
-        desk.state.markRefused(notes, at: t0)
+        desk.refuse(notes)
         desk.at(10)
         desk.frontmost = notes
         desk.send(.activated(notes))
         XCTAssertNil(desk.state.timers[notes]?.refusedUntil)
-        desk.state.markRefused(preview, at: desk.now)
+        desk.refuse(preview)
         desk.send(.unhidden(preview))
         XCTAssertNil(desk.state.timers[preview]?.refusedUntil, "an unhide clears it too")
     }
@@ -419,15 +475,74 @@ final class PolicyTests: XCTestCase {
         _ = desk.evaluate()
         desk.at(60)
         XCTAssertEqual(desk.evaluate().hide, [notes, preview])
+        let issued = desk.generation(notes)
         desk.frontmost = notes
         desk.send(.activated(notes))
-        desk.state.markRefused(notes, at: desk.now)
+        XCTAssertFalse(desk.state.markRefused(notes, generation: issued, at: desk.now))
         XCTAssertNil(desk.state.timers[notes]?.refusedUntil)
         desk.at(70)
         desk.frontmost = terminal
         desk.send(.activated(terminal))
         _ = desk.evaluate()
         XCTAssertEqual(desk.status(notes), .pending(hideAt: t0 + 130), "one timeout after the user leaves it, not 5 min")
+    }
+
+    func testB08_ARefusalFromBeforeAnActivationAndDepartureIsDropped() {
+        // The user activated Notes and left it again before the refusal
+        // landed, so Notes is no longer protected when it arrives.
+        // Only the generation shows that the refusal predates an activation.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        XCTAssertEqual(desk.evaluate().hide, [notes, preview])
+        let issued = desk.generation(notes)
+        desk.at(61)
+        desk.frontmost = notes
+        desk.send(.activated(notes))
+        desk.at(62)
+        desk.frontmost = terminal
+        desk.send(.activated(terminal))
+        desk.at(63)
+        XCTAssertEqual(desk.state.protected, terminal)
+        XCTAssertFalse(desk.state.markRefused(notes, generation: issued, at: desk.now))
+        XCTAssertNil(desk.state.timers[notes]?.refusedUntil, "no 5-minute backoff")
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [preview], nextCheck: t0 + 122))
+    }
+
+    func testB08_ARefusalFromBeforeAnUnhideIsDropped() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        let issued = desk.generation(preview)
+        desk.send(.unhidden(preview))
+        XCTAssertFalse(desk.state.markRefused(preview, generation: issued, at: desk.now))
+        XCTAssertNil(desk.state.timers[preview]?.refusedUntil)
+    }
+
+    func testB08_ARefusalWithNoActivationSinceTheIssueBacksOff() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        let issued = desk.generation(notes)
+        desk.send(.activated(preview))        // another app's activation is not Notes'
+        desk.send(.hidden(preview))
+        XCTAssertTrue(desk.state.markRefused(notes, generation: issued, at: desk.now))
+        XCTAssertEqual(desk.state.timers[notes]?.refusedUntil, t0 + 60 + PolicyState.refusalBackoff)
+        XCTAssertFalse(desk.state.markRefused(chess, generation: 0, at: desk.now), "no timer, nothing to back off")
+    }
+
+    func testActivationAndUnhideEachBumpTheGeneration() {
+        var desk = desk()
+        _ = desk.evaluate()
+        let start = desk.generation(notes)
+        desk.send(.activated(notes))
+        desk.send(.unhidden(notes))
+        desk.send(.hidden(notes))
+        desk.send(.spaceChanged)
+        XCTAssertEqual(desk.generation(notes), start.map { $0 + 2 })
+        desk.frontmost = preview
+        _ = desk.evaluate()                     // observe's activation counts too
+        XCTAssertEqual(desk.generation(preview), 1)
     }
 
     func testB09_AFullscreenSpaceSuspendsHiding() {
@@ -566,7 +681,7 @@ final class PolicyTests: XCTestCase {
                         frontmost: terminal)
         desk.config = Config(exempt: ["Finder"])
         _ = desk.evaluate()
-        desk.state.markRefused(106, at: t0)
+        desk.refuse(106)
         func hideable() -> [PID] {
             desk.apps.filter {
                 Policy.mayHideNow($0, state: desk.state, observation: desk.observation, config: desk.config, now: desk.now)
@@ -647,7 +762,7 @@ final class PolicyTests: XCTestCase {
                         frontmost: terminal)
         desk.config = Config(exempt: ["Finder"])
         _ = desk.evaluate()
-        desk.state.markRefused(106, at: t0)
+        desk.refuse(106)
         desk.at(30)
         XCTAssertEqual(desk.status(101), .protected)
         XCTAssertEqual(desk.status(101).label, "frontmost")

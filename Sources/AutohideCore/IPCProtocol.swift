@@ -18,7 +18,9 @@ public enum IPC {
         }
     }
 
-    /// Daemon state for `autohide status`.
+    /// Daemon state for `autohide status`. Decoding ignores unknown keys, so a
+    /// CLI can read a daemon one version older (it sent `accessibility` until
+    /// the Accessibility fallback was removed).
     public struct StatusPayload: Codable, Equatable {
         public var pid: Int32
         public var version: String
@@ -34,12 +36,11 @@ public enum IPC {
         public var protectedApp: String?
         public var configPath: String
         public var logPath: String
-        public var accessibility: Bool         // informational: AX fallback available
 
         public init(pid: Int32, version: String, startedAt: Date, paused: Bool, pausedUntil: Date?,
                     away: Bool, fullscreenSpace: Bool, timeout: Double, exempt: [String],
                     appTimeouts: [String: Double], onlyApps: [String], protectedApp: String?,
-                    configPath: String, logPath: String, accessibility: Bool) {
+                    configPath: String, logPath: String) {
             self.pid = pid
             self.version = version
             self.startedAt = startedAt
@@ -54,7 +55,6 @@ public enum IPC {
             self.protectedApp = protectedApp
             self.configPath = configPath
             self.logPath = logPath
-            self.accessibility = accessibility
         }
     }
 

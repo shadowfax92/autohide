@@ -154,9 +154,6 @@ enum CLI {
         if !status.onlyApps.isEmpty {
             rows.append(("only", status.onlyApps.joined(separator: ", ") + " (test allowlist)"))
         }
-        rows.append(("access.", status.accessibility
-            ? "granted (fallback for apps that refuse to hide)"
-            : "not granted (optional)"))
         rows.append(("config", status.configPath))
         rows.append(("log", status.logPath))
 

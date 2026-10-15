@@ -26,13 +26,6 @@ extension Notification.Name {
     static let engineStateDidChange = Notification.Name("com.autohide.engineStateDidChange")
 }
 
-/// Why a hide was requested. A timed hide must still be due when it is
-/// issued; a hide-others hide needs only Policy.mayHideNow.
-private enum HideTrigger: String {
-    case timeout
-    case hideOthers = "hide-others"
-}
-
 /// Runs the evaluation loop in design.md §3: reload config if changed, expire
 /// pauses, observe, decide, hide, and re-arm one one-shot timer at nextCheck.
 ///
@@ -70,7 +63,7 @@ final class Engine: EngineControl {
     /// The last probe result, kept for `status` (fullscreen Space) and the menu.
     private var lastObservation: Observation?
     /// PIDs with a hide queued or not yet completed. Hider confirms
-    /// asynchronously (up to ~2 s), and without this a heartbeat or event
+    /// asynchronously (up to 1 s), and without this a heartbeat or event
     /// evaluate in that window would issue a second hide for the same app.
     private var hidesInFlight: Set<PID> = []
     /// Hides decided but not yet issued, oldest deadline first. Each goes out
@@ -129,8 +122,9 @@ final class Engine: EngineControl {
         deadlineTimer = nil
         settleChecks.removeAll()
         // Nothing may hide after stop: queued hides are dropped, and in-flight
-        // attempts end as .withdrawn before any AX fallback could run.
-        queuedHides.removeAll()
+        // attempts end as .withdrawn now, releasing their timers and observers.
+        // A hide() already sent cannot be recalled.
+        dropQueuedHides()
         hider.cancelAll()
         hidesInFlight.removeAll()
         Log.info("engine stopped")
@@ -243,8 +237,7 @@ final class Engine: EngineControl {
             onlyApps: config.onlyApps,
             protectedApp: protectedApp?.name,
             configPath: paths.configFile.path,
-            logPath: paths.logFile.path,
-            accessibility: Hider.accessibilityTrusted)
+            logPath: paths.logFile.path)
     }
 
     func appRows() -> [IPC.AppRow] {
@@ -269,10 +262,14 @@ final class Engine: EngineControl {
     func pause(seconds: TimeInterval?) {
         let now = Date()
         state.pause(until: seconds.map { now.addingTimeInterval($0) }, at: now)
-        // In-flight attempts must not reach their AX fallback while paused;
-        // queued ones are withdrawn by stillEligible when their turn comes.
-        hider.cancelAll()
-        Log.info(seconds.map { "paused for \(DurationFormat.format($0))" } ?? "paused until resumed")
+        // Queued hides go now. Leaving them for their turn's recheck is not
+        // enough: a resume that lands first would let a pre-pause hide-others
+        // hide apps whose timers the resume just refreshed.
+        // Attempts already in Hider have sent hide(), which cannot be
+        // recalled; they only confirm, so they finish and log as usual.
+        let dropped = dropQueuedHides()
+        Log.info((seconds.map { "paused for \(DurationFormat.format($0))" } ?? "paused until resumed")
+                 + (dropped > 0 ? "; dropped \(dropped) queued hides" : ""))
         evaluate(reason: "pause")
         publishPausedIfChanged(at: now)
     }
@@ -385,8 +382,28 @@ final class Engine: EngineControl {
         deadlineTimer?.invalidate()
         deadlineTimer = nil
         guard let nextCheck else { return }
-        let fireAt = max(nextCheck.addingTimeInterval(Self.deadlineLeeway),
-                         now.addingTimeInterval(Self.minimumRearm))
+        armDeadlineTimer(at: max(nextCheck.addingTimeInterval(Self.deadlineLeeway),
+                                 now.addingTimeInterval(Self.minimumRearm)))
+    }
+
+    /// For state changes made outside evaluate that can move a deadline: a hide
+    /// withdrawn on its turn (the app is no longer due, but may be soon), or a
+    /// config reload by the issuing turn's recheck (a new timeout). Without a
+    /// re-arm, the timer armed by the deciding evaluate may be for a later
+    /// deadline, or none at all when every candidate was due, and the new one
+    /// would wait for the 20 s heartbeat. This brings the one timer forward to
+    /// now + minimumRearm, never later than it already fires, so a burst of
+    /// withdrawals costs one evaluation. It never calls evaluate directly: it
+    /// runs inside a hide turn or a Hider completion.
+    private func evaluateSoon() {
+        guard running else { return }
+        let fireAt = Date().addingTimeInterval(Self.minimumRearm)
+        if let timer = deadlineTimer, timer.isValid, timer.fireDate <= fireAt { return }
+        deadlineTimer?.invalidate()
+        armDeadlineTimer(at: fireAt)
+    }
+
+    private func armDeadlineTimer(at fireAt: Date) {
         let timer = Timer(fire: fireAt, interval: 0, repeats: false) { [weak self] _ in
             self?.evaluate(reason: "deadline")
         }
@@ -425,6 +442,17 @@ final class Engine: EngineControl {
         DispatchQueue.main.async { [weak self] in self?.issueNextHide() }
     }
 
+    /// Forgets every hide that has not reached Hider, with its in-flight
+    /// marker, so a later evaluate can queue that app again. Returns how many.
+    /// A turn already scheduled finds the queue empty and does nothing.
+    @discardableResult
+    private func dropQueuedHides() -> Int {
+        let dropped = queuedHides.map(\.pid)
+        queuedHides.removeAll()
+        hidesInFlight.subtract(dropped)
+        return dropped.count
+    }
+
     private func issueNextHide() {
         hideTurnScheduled = false
         guard !queuedHides.isEmpty else { return }
@@ -438,42 +466,44 @@ final class Engine: EngineControl {
         let identity = lastObservation?.apps.first { $0.pid == pid }?.identity ?? AppIdentity(name: "pid \(pid)")
         let idle = state.timers[pid].map { now.timeIntervalSince($0.lastActive) }
         let timeout = config.effectiveTimeout(for: identity)
+        // A refusal is judged against the app's activations from here on: one
+        // that lands after the user activated or unhid the app is stale.
+        let generation = state.timers[pid]?.activationGeneration
         Log.debug("hide pid=\(pid) issued by=\(trigger.rawValue) (\(queuedHides.count) still queued)")
 
-        // Hider asks stillEligible on this turn right before hide(), and again
-        // right before any AX fallback, each in the same turn as the act. That is
-        // as close as macOS allows: there is no atomic "hide unless active", so a
+        // Hider asks stillEligible on this turn right before hide(). That is as
+        // close as macOS allows: there is no atomic "hide unless active", so a
         // click on the app that WindowServer is delivering while hide() is being
-        // sent can still lose to it. The completion arrives on main, possibly
-        // ~2 s later, and only records the outcome; the next evaluate re-decides.
+        // sent can still lose to it. The completion arrives on main, up to 1 s
+        // later, and only records the outcome; the next evaluate re-decides.
         hider.hide(pid, stillEligible: { [weak self] in
             self?.stillEligible(pid, trigger) ?? false
         }, completion: { [weak self] result in
-            self?.hideFinished(pid, identity: identity, result: result,
+            self?.hideFinished(pid, identity: identity, result: result, generation: generation,
                                idle: idle, timeout: timeout, trigger: trigger)
         })
     }
 
-    /// Hider's last-moment check. It takes a fresh probe rather than reusing the
-    /// deciding evaluation's: focus, protection, pause, away or lock, the
-    /// fullscreen Space, config, and the app's own visibility can all change in
-    /// the turns between deciding and acting. The probe is not fed into the
-    /// ledger (no state.observe); the next evaluate reconciles as usual.
+    /// Hider's last-moment check, on the issuing turn. It takes a fresh probe
+    /// rather than reusing the deciding evaluation's: focus, protection, pause,
+    /// away or lock, the fullscreen Space, config, and the app's own visibility
+    /// can all change in the turns between deciding and acting. The rules are
+    /// PolicyState.recheckHide; a lock it sees is recorded there.
     private func stillEligible(_ pid: PID, _ trigger: HideTrigger) -> Bool {
         guard running, !state.isAway else { return false }
-        reloadConfigIfChanged()
-        let observation = probe.observe()
-        guard let app = observation.apps.first(where: { $0.pid == pid }) else { return false }
-        let now = Date()
-        switch trigger {
-        case .timeout:
-            return Policy.status(of: app, state: state, observation: observation, config: config, now: now) == .due
-        case .hideOthers:
-            return Policy.mayHideNow(app, state: state, observation: observation, config: config, now: now)
+        if reloadConfigIfChanged() {
+            evaluateSoon()   // the reload may have moved deadlines; see evaluateSoon
         }
+        let observation = probe.observe()
+        let eligible = state.recheckHide(pid, trigger: trigger, observation: observation,
+                                         config: config, now: Date())
+        if state.isAway {
+            Log.info("away: lock (the probe before a hide saw the screen locked; no notification arrived)")
+        }
+        return eligible
     }
 
-    private func hideFinished(_ pid: PID, identity: AppIdentity, result: HideResult,
+    private func hideFinished(_ pid: PID, identity: AppIdentity, result: HideResult, generation: Int?,
                               idle: TimeInterval?, timeout: TimeInterval?, trigger: HideTrigger) {
         hidesInFlight.remove(pid)
         let app = "app=\"\(identity.name)\" pid=\(pid)"
@@ -492,20 +522,27 @@ final class Engine: EngineControl {
             Log.debug("hide \(app): skipped, it became frontmost")
         case .withdrawn:
             Log.debug("hide \(app): withdrawn, no longer eligible by=\(trigger.rawValue)")
+            evaluateSoon()
         case .refused(let reason):
             // Back off instead of retrying every evaluate (diagnosis R8). One line
             // per refusal; the next attempt is at least refusalBackoff away.
-            // markRefused ignores the app if the user has switched to it since.
-            state.markRefused(pid, at: Date())
-            Log.warn("hide refused \(app) reason=\"\(reason)\" retry_in=\(DurationFormat.format(PolicyState.refusalBackoff))")
+            // markRefused drops the backoff if the user activated or unhid the
+            // app after this hide was issued; the refusal is still logged.
+            let backoff = state.markRefused(pid, generation: generation, at: Date())
+                ? DurationFormat.format(PolicyState.refusalBackoff)
+                : "- (activated or unhidden since the hide was issued; no backoff)"
+            Log.warn("hide refused \(app) reason=\"\(reason)\" retry_in=\(backoff)")
         }
     }
 
     // MARK: - Config
 
-    private func reloadConfigIfChanged() {
-        guard FileStamp(paths.configFile) != configStamp else { return }
+    /// Returns whether config.json changed on disk (and a load was attempted).
+    @discardableResult
+    private func reloadConfigIfChanged() -> Bool {
+        guard FileStamp(paths.configFile) != configStamp else { return false }
         loadConfig(reason: "config file changed")
+        return true
     }
 
     /// Loads config.json. On failure the previous config stays in force; the

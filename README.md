@@ -79,32 +79,34 @@ over; the default timeout becomes 60 s.
 
 ## Permissions
 
-None are needed. Hiding uses `NSRunningApplication.hide()`, and window
-visibility comes from `CGWindowList` (owners and bounds only, never titles).
-Neither needs a grant, so autohide never shows a permission prompt.
+None. Hiding uses `NSRunningApplication.hide()`, and window visibility comes
+from `CGWindowList` (owners and bounds only, never titles). Neither needs a
+grant, so autohide never shows a permission prompt.
 
-Accessibility is optional. If you grant it, autohide uses it as a fallback
-for the rare app that refuses to hide. The bundle is signed with a stable
-identity (Developer ID, identifier `com.autohide.daemon`), so a grant survives
-rebuilds. `make bundle` prints the designated requirement. It should name a
-team (`certificate leaf[subject.OU] = "…"`), not a `cdhash`. With no
-certificate in the keychain, the Makefile signs ad hoc and warns loudly,
-because each rebuild would then silently void the grant. To sign with another
-identity, pass `SIGN_ID="…"`.
+autohide does not use Accessibility, even if you grant it. An app that
+ignores the hide is not forced: it shows as `refused` in `autohide list` and
+is tried again after 5 minutes. No app has done so yet.
+
+The bundle is signed with a stable identity (Developer ID, identifier
+`com.autohide.daemon`). `make bundle` prints the designated requirement. It
+should name a team (`certificate leaf[subject.OU] = "…"`), not a `cdhash`.
+With no certificate in the keychain, the Makefile signs ad hoc and warns
+loudly. To sign with another identity, pass `SIGN_ID="…"`.
 
 ## Test instance
 
 `scripts/test-instance.sh` runs a second autohide beside the real one. It has
 its own config directory, no menu-bar item, a 10 s timeout, and an allowlist
-(`only_apps`) of throwaway apps: TextEdit, Calculator, Chess, and Preview,
-with Preview exempt.
+(`only_apps`) of throwaway apps: Calculator, TextEdit, Preview, and Font
+Book, with Font Book exempt.
 
 ```bash
 scripts/test-instance.sh start   # write the test config, start the daemon
 scripts/test-instance.sh e2e     # open the apps, PASS/FAIL that the right ones hide
+scripts/test-instance.sh pause-queue   # PASS/FAIL that a pause drops hides still queued
 scripts/test-instance.sh list
 scripts/test-instance.sh term    # SIGTERM only: checks exit 0 and that the socket is gone
-scripts/test-instance.sh stop    # stop it and quit only the apps e2e opened
+scripts/test-instance.sh stop    # stop it and quit only the apps the script opened
 
 # The same instance under a throwaway LaunchAgent (no inherited TCC grants,
 # real KeepAlive). Label com.autohide.test unless AUTOHIDE_LAUNCHD_LABEL says

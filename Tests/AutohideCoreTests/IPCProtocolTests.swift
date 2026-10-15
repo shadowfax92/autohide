@@ -66,6 +66,18 @@ final class IPCProtocolTests: XCTestCase {
         XCTAssertEqual(try IPC.decodeLine(IPC.Response.self, from: data).status?.startedAt, t0)
     }
 
+    func testStatusFromADaemonThatStillSendsAccessibilityDecodes() throws {
+        // After an upgrade the new CLI talks to the old daemon until a restart.
+        var object = try JSONSerialization.jsonObject(
+            with: IPC.encodeLine(IPC.Response(ok: true, status: status(pausedUntil: nil)))) as! [String: Any]
+        var statusObject = object["status"] as! [String: Any]
+        XCTAssertNil(statusObject["accessibility"])
+        statusObject["accessibility"] = true
+        object["status"] = statusObject
+        let data = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertEqual(try IPC.decodeLine(IPC.Response.self, from: data).status, status(pausedUntil: nil))
+    }
+
     func testDecodeRejectsGarbage() {
         XCTAssertThrowsError(try IPC.decodeLine(IPC.Request.self, from: Data("not json\n".utf8)))
         XCTAssertThrowsError(try IPC.decodeLine(IPC.Request.self, from: Data(#"{"command":"explode"}"#.utf8)))
@@ -77,7 +89,7 @@ final class IPCProtocolTests: XCTestCase {
             pid: 4242, version: AutohideVersion.current, startedAt: t0, paused: true, pausedUntil: pausedUntil,
             away: false, fullscreenSpace: false, timeout: 60, exempt: ["Finder"], appTimeouts: ["Slack": 300],
             onlyApps: [], protectedApp: "Terminal", configPath: "/tmp/ah/config.json",
-            logPath: "/tmp/ah/autohide.log", accessibility: false)
+            logPath: "/tmp/ah/autohide.log")
     }
 
     private func roundTrip<T: Codable>(_ value: T) throws -> T {
