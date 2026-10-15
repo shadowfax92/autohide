@@ -45,6 +45,23 @@ public struct Observation: Equatable {
 
 public enum AwayReason: String, Equatable, Hashable { case sleep, displaySleep, lock, session }
 
+/// Cheap facts about the login session, read by the Engine's heartbeat while
+/// away (WindowProbe.presence) to end an away whose return notification was
+/// missed. See PolicyState.reconcileAway.
+public struct Presence: Equatable {
+    public var onConsole: Bool             // this session owns the screen (not switched out)
+    public var screenLocked: Bool
+    public var displayAwake: Bool          // main display
+    public var lastInput: Date?            // last keyboard/mouse/trackpad event; nil = unknown
+
+    public init(onConsole: Bool, screenLocked: Bool, displayAwake: Bool, lastInput: Date?) {
+        self.onConsole = onConsole
+        self.screenLocked = screenLocked
+        self.displayAwake = displayAwake
+        self.lastInput = lastInput
+    }
+}
+
 /// What WorkspaceEvents tells the Engine, already translated from NSWorkspace
 /// and distributed notifications.
 public enum PolicyEvent: Equatable {
@@ -75,9 +92,14 @@ public struct AppTimer: Equatable {
 /// It is never persisted: a restart gives every app a fresh timeout.
 public struct PolicyState: Equatable {
     public static let refusalBackoff: TimeInterval = 300
+    /// Input this recent, and newer than awaySince, proves a return (reconcileAway).
+    public static let presenceWindow: TimeInterval = 30
     public var timers: [PID: AppTimer]
     public var protected: PID?             // last activated regular app
     public var awayReasons: Set<AwayReason>
+    /// When awayReasons last became non-empty; nil while not away. Kept by
+    /// apply and observe, the only mutators that take a clock.
+    public private(set) var awaySince: Date?
     public var pausedUntil: Date?          // Date.distantFuture = until resumed
 
     public init() {
@@ -110,6 +132,7 @@ public struct PolicyState: Equatable {
     /// Events only touch PIDs that already have a timer, except `launched`,
     /// which starts one. Any other new PID gets its timer from the next observe.
     public mutating func apply(_ event: PolicyEvent, at now: Date) {
+        defer { stampAway(now) }
         switch event {
         case .activated(let pid):
             // An activation proves the user is back even if the wake or unlock
@@ -148,15 +171,22 @@ public struct PolicyState: Equatable {
     /// Reconcile with reality: add unseen PIDs (lastActive = now), drop PIDs not
     /// in obs.apps, appearance rule (wasVisible false → hasVisibleWindow true ⇒
     /// lastActive = max(lastActive, now)), set wasVisible, and treat a changed
-    /// regular obs.frontmost as an activation. If !obs.screenLocked, remove .lock.
+    /// regular obs.frontmost as an activation. A locked obs records .lock; an
+    /// unlocked one removes it.
     ///
     /// This is what makes a missed notification harmless: the heartbeat's
     /// observe rebuilds the PID set, visibility, and the protected app from
     /// what is actually on screen. A protected PID that is gone is cleared too.
     public mutating func observe(_ obs: Observation, at now: Date) {
-        // An unlock seen by the probe is a return (fresh timeouts), exactly as
-        // if the screenIsUnlocked notification had arrived.
-        if !obs.screenLocked && awayReasons.contains(.lock) {
+        defer { stampAway(now) }
+        if obs.screenLocked {
+            // A lock the notification missed, or a start while locked. Recorded,
+            // not just obeyed, so the unlock is a return with fresh timeouts
+            // instead of a burst of hides for everything that aged meanwhile.
+            awayReasons.insert(.lock)
+        } else if awayReasons.contains(.lock) {
+            // An unlock seen by the probe is a return (fresh timeouts), exactly as
+            // if the screenIsUnlocked notification had arrived.
             apply(.returned(.lock), at: now)
         }
 
@@ -177,7 +207,9 @@ public struct PolicyState: Equatable {
 
         // Only a regular app (one in obs.apps) can take over protection. Spotlight
         // or a menu-bar popover in front leaves the app you were in protected.
-        if let front = obs.frontmost, front != protected, live.contains(front) {
+        // Nobody activates apps behind the lock screen, and treating whatever is
+        // frontmost there as an activation would clear the lock just recorded.
+        if !obs.screenLocked, let front = obs.frontmost, front != protected, live.contains(front) {
             apply(.activated(front), at: now)
         }
     }
@@ -188,6 +220,36 @@ public struct PolicyState: Equatable {
     /// off "until the app's next activation", and that activation has already
     /// happened; recording it now would keep the app on screen for five
     /// minutes after the user leaves it.
+    private mutating func stampAway(_ now: Date) {
+        if awayReasons.isEmpty {
+            awaySince = nil
+        } else if awaySince == nil {
+            awaySince = now
+        }
+    }
+
+    /// The heartbeat's answer to a missed return notification (didWake,
+    /// screensDidWake, screenIsUnlocked, session switched back): without it,
+    /// §3 step 3 never probes while away and hiding stops until the next app
+    /// switch. The user is provably back when the session is on the console and
+    /// unlocked, and either the lock was the only reason (unlocking is the
+    /// return), or the display is awake and there was input within
+    /// `presenceWindow` and after the away began. Input from before it (the
+    /// lid-close right after willSleep) proves nothing. Every recorded reason
+    /// then gets `.returned`, which refreshes every timer. Returns the reasons
+    /// it cleared, sorted; empty when it changed nothing.
+    @discardableResult
+    public mutating func reconcileAway(_ presence: Presence, at now: Date) -> [AwayReason] {
+        guard isAway, presence.onConsole, !presence.screenLocked else { return [] }
+        let inputSinceAway = presence.lastInput.map {
+            now.timeIntervalSince($0) < PolicyState.presenceWindow && $0 > (awaySince ?? .distantFuture)
+        } ?? false
+        guard awayReasons == [.lock] || (presence.displayAwake && inputSinceAway) else { return [] }
+        let cleared = awayReasons.sorted { $0.rawValue < $1.rawValue }
+        for reason in cleared { apply(.returned(reason), at: now) }
+        return cleared
+    }
+
     public mutating func markRefused(_ pid: PID, at now: Date) {
         guard pid != protected else { return }
         timers[pid]?.refusedUntil = now + PolicyState.refusalBackoff
@@ -303,6 +365,19 @@ public enum Policy {
         }
         due.sort { ($0.hideAt, $0.pid) < ($1.hideAt, $1.pid) }
         return Decision(hide: due.map(\.pid), nextCheck: nextCheck)
+    }
+
+    /// Whether a manual "hide others now" may hide this app: anything `decide`
+    /// would hide sooner or later, ignoring its timer and any refusal backoff.
+    /// Built on `status`, so the manual and timed paths share every rule:
+    /// nothing while away, locked, paused, or on a fullscreen Space, and never
+    /// the frontmost, protected, exempt, hidden, or off-Space app.
+    public static func mayHideNow(_ app: AppSnapshot, state: PolicyState,
+                                  observation: Observation, config: Config, now: Date) -> Bool {
+        switch status(of: app, state: state, observation: observation, config: config, now: now) {
+        case .pending, .refused, .due: return true
+        default: return false
+        }
     }
 
     /// Checked in order; the first rule that applies wins. Facts about the app

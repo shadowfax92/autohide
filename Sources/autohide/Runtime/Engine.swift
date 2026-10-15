@@ -26,6 +26,13 @@ extension Notification.Name {
     static let engineStateDidChange = Notification.Name("com.autohide.engineStateDidChange")
 }
 
+/// Why a hide was requested. A timed hide must still be due when it is
+/// issued; a hide-others hide needs only Policy.mayHideNow.
+private enum HideTrigger: String {
+    case timeout
+    case hideOthers = "hide-others"
+}
+
 /// Runs the evaluation loop in design.md §3: reload config if changed, expire
 /// pauses, observe, decide, hide, and re-arm one one-shot timer at nextCheck.
 ///
@@ -62,10 +69,14 @@ final class Engine: EngineControl {
     private let startedAt = Date()
     /// The last probe result, kept for `status` (fullscreen Space) and the menu.
     private var lastObservation: Observation?
-    /// PIDs whose Hider call has not completed yet. Hider confirms asynchronously
-    /// (up to ~1.5 s), and without this a heartbeat or event evaluate in that
-    /// window would issue a second hide for the same app.
+    /// PIDs with a hide queued or not yet completed. Hider confirms
+    /// asynchronously (up to ~2 s), and without this a heartbeat or event
+    /// evaluate in that window would issue a second hide for the same app.
     private var hidesInFlight: Set<PID> = []
+    /// Hides decided but not yet issued, oldest deadline first. Each goes out
+    /// on its own later main-run-loop turn; see scheduleHideTurn.
+    private var queuedHides: [(pid: PID, trigger: HideTrigger)] = []
+    private var hideTurnScheduled = false
     /// Pending settle probes (see `settleDelays`), sorted. They share the one
     /// deadline timer with hide deadlines; evaluate drops the ones that passed.
     private var settleChecks: [Date] = []
@@ -117,6 +128,11 @@ final class Engine: EngineControl {
         deadlineTimer?.invalidate()
         deadlineTimer = nil
         settleChecks.removeAll()
+        // Nothing may hide after stop: queued hides are dropped, and in-flight
+        // attempts end as .withdrawn before any AX fallback could run.
+        queuedHides.removeAll()
+        hider.cancelAll()
+        hidesInFlight.removeAll()
         Log.info("engine stopped")
     }
 
@@ -134,7 +150,8 @@ final class Engine: EngineControl {
         }
         publishPausedIfChanged(at: now)
         if state.isAway {                                          // 3
-            // Nothing can hide while away; `.returned` or an activation re-evaluates.
+            // Nothing can hide while away; `.returned`, an activation, or the
+            // heartbeat's presence check ends it and re-evaluates.
             deadlineTimer?.invalidate()
             deadlineTimer = nil
             Log.debug("evaluate(\(reason)): away \(state.awayReasons.map(\.rawValue).sorted())")
@@ -149,13 +166,18 @@ final class Engine: EngineControl {
         }
         lastObservation = observation
         state.observe(observation, at: now)
+        if state.isAway {
+            // PolicyState.observe recorded a locked screen that no notification
+            // reported (missed, or the daemon started while locked).
+            Log.info("away: lock (the probe saw the screen locked; no notification arrived)")
+        }
 
         let decision = Policy.decide(state: state, observation: observation,     // 5
                                      config: config, now: now)
         Log.debug(describe(decision, observation, reason: reason, now: now))
 
         for pid in decision.hide {                                 // 6
-            requestHide(pid, observation: observation, now: now, trigger: "timeout")
+            enqueueHide(pid, trigger: .timeout)
         }
         settleChecks.removeAll { $0 <= now }
         arm([decision.nextCheck, settleChecks.first].compactMap { $0 }.min(), now: now)   // 7
@@ -247,6 +269,9 @@ final class Engine: EngineControl {
     func pause(seconds: TimeInterval?) {
         let now = Date()
         state.pause(until: seconds.map { now.addingTimeInterval($0) }, at: now)
+        // In-flight attempts must not reach their AX fallback while paused;
+        // queued ones are withdrawn by stillEligible when their turn comes.
+        hider.cancelAll()
         Log.info(seconds.map { "paused for \(DurationFormat.format($0))" } ?? "paused until resumed")
         evaluate(reason: "pause")
         publishPausedIfChanged(at: now)
@@ -260,32 +285,30 @@ final class Engine: EngineControl {
         publishPausedIfChanged(at: now)
     }
 
-    /// Hides every visible app that config allows to hide, ignoring timers. The
-    /// frontmost and protected apps, exempt apps, and apps outside `only_apps`
-    /// are never touched. Pause still wins. Returns how many hides were issued;
-    /// their outcomes arrive asynchronously and are logged like timed hides.
+    /// Hides every visible app that config allows to hide, ignoring timers but
+    /// not suspensions: Policy.mayHideNow is the timed path's own rule, so this
+    /// does nothing while away, locked, paused, or on a fullscreen Space, and
+    /// never touches the frontmost, protected, or exempt app. Returns how many
+    /// hides were queued; each is re-checked when issued, and the outcomes are
+    /// logged like timed hides.
     func hideOthersNow() -> Int {
         guard running else { return 0 }
         // Reloads config, expires a timed pause, and refreshes the ledger first.
         evaluate(reason: "hide-others")
         let now = Date()
-        guard !state.isPaused(at: now) else {
-            Log.info("hide-others ignored: paused")
+        guard !state.isAway, let observation = lastObservation else {
+            Log.info("hide-others ignored: away")
             return 0
         }
-        let observation = state.isAway ? probe.observe() : (lastObservation ?? probe.observe())
-
-        let targets = observation.apps.filter { app in
-            !app.isHidden && app.hasVisibleWindow
-                && app.pid != observation.frontmost && app.pid != state.protected
-                && config.effectiveTimeout(for: app.identity) != nil
+        let targets = observation.apps.filter {
+            Policy.mayHideNow($0, state: state, observation: observation, config: config, now: now)
         }
-        var issued = 0
-        for app in targets where requestHide(app.pid, observation: observation, now: now, trigger: "hide-others") {
-            issued += 1
+        var queued = 0
+        for app in targets where enqueueHide(app.pid, trigger: .hideOthers) {
+            queued += 1
         }
-        Log.info("hide-others: issued \(issued) hides (\(observation.apps.count) apps seen)")
-        return issued
+        Log.info("hide-others: queued \(queued) hides (\(observation.apps.count) apps seen)")
+        return queued
     }
 
     func reloadConfig() {
@@ -335,16 +358,18 @@ final class Engine: EngineControl {
         evaluate(reason: "\(event)")
     }
 
-    /// §3 step 3 skips the probe while away, which would leave a missed
-    /// screenIsUnlocked stuck until the next app switch. So when the lock is the
-    /// only away reason, the heartbeat reads the probe's session lock state, and an
-    /// unlocked screen counts as the return (fresh timeouts). While still locked
-    /// the ledger is left alone. Sleep and display sleep still end only by event
-    /// or activation: their probe answers mean nothing while asleep.
+    /// While away, evaluate never probes, so a missed return notification would
+    /// stop hiding until the next app switch. The heartbeat asks the session
+    /// instead; PolicyState.reconcileAway decides whether that proves a return.
     private func heartbeatTick() {
-        if running, state.awayReasons == [.lock], !probe.observe().screenLocked {
-            Log.info("returned: lock (heartbeat saw the screen unlocked; the notification was missed)")
-            state.apply(.returned(.lock), at: Date())
+        if running, state.isAway {
+            let presence = WindowProbe.presence()
+            let cleared = state.reconcileAway(presence, at: Date())
+            if !cleared.isEmpty {
+                let input = presence.lastInput.map { String(format: "%.0fs ago", -$0.timeIntervalSinceNow) } ?? "unknown"
+                Log.info("returned: \(cleared.map(\.rawValue).joined(separator: ", ")) (heartbeat: on console, unlocked, "
+                    + "display awake=\(presence.displayAwake), last input \(input); the return notification was missed)")
+            }
         }
         evaluate(reason: "heartbeat")
     }
@@ -372,47 +397,90 @@ final class Engine: EngineControl {
 
     // MARK: - Hiding
 
-    /// Issues one hide unless it is already in flight or the app just became
-    /// frontmost. Returns whether a hide was issued.
+    /// Queues one hide unless that app already has one queued or in flight.
+    /// Returns whether it was queued.
     @discardableResult
-    private func requestHide(_ pid: PID, observation: Observation, now: Date, trigger: String) -> Bool {
+    private func enqueueHide(_ pid: PID, trigger: HideTrigger) -> Bool {
         guard !hidesInFlight.contains(pid) else {
             Log.debug("hide pid=\(pid) skipped: already in flight")
             return false
         }
-        // Last-moment guard (design §7.3): never hide what NSWorkspace calls
-        // frontmost, whatever the observation or Policy said. NSWorkspace state is a
-        // per-run-loop-turn snapshot (spike gotcha 2), so this cannot see a switch
-        // that happens during this turn; activation resetting lastActive covers that.
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-            Log.debug("hide pid=\(pid) skipped: became frontmost")
-            return false
-        }
-        let identity = observation.apps.first { $0.pid == pid }?.identity
-            ?? AppIdentity(name: "pid \(pid)")
-        let idle = state.timers[pid].map { now.timeIntervalSince($0.lastActive) }
-        let timeout = config.effectiveTimeout(for: identity)
-
         hidesInFlight.insert(pid)
-        // Hider completes on main, possibly ~1.5 s later (it waits for didHide or
-        // an isHidden poll). Everything about the app may have changed by then, so
-        // the completion only records the outcome; the next evaluate re-decides.
-        hider.hide(pid) { [weak self] result in
-            self?.hideFinished(pid, identity: identity, result: result,
-                               idle: idle, timeout: timeout, trigger: trigger)
-        }
+        queuedHides.append((pid, trigger))
+        scheduleHideTurn()
         return true
     }
 
+    /// Hides go out one per main-run-loop turn, never from the evaluation that
+    /// decided them. NSWorkspace and NSRunningApplication focus state is a
+    /// snapshot refreshed between turns (spike gotcha 2): hides issued in the
+    /// deciding turn, or a batch issued in one turn, would all act on focus as
+    /// it was when that turn began. A block enqueued from inside a running
+    /// main-queue block runs on a later run-loop iteration (measured), so
+    /// chaining one block per hide gives each a snapshot taken after the
+    /// previous hide was sent.
+    private func scheduleHideTurn() {
+        guard !hideTurnScheduled, !queuedHides.isEmpty else { return }
+        hideTurnScheduled = true
+        DispatchQueue.main.async { [weak self] in self?.issueNextHide() }
+    }
+
+    private func issueNextHide() {
+        hideTurnScheduled = false
+        guard !queuedHides.isEmpty else { return }
+        let (pid, trigger) = queuedHides.removeFirst()
+        defer { scheduleHideTurn() }
+        guard running else {
+            hidesInFlight.remove(pid)
+            return
+        }
+        let now = Date()
+        let identity = lastObservation?.apps.first { $0.pid == pid }?.identity ?? AppIdentity(name: "pid \(pid)")
+        let idle = state.timers[pid].map { now.timeIntervalSince($0.lastActive) }
+        let timeout = config.effectiveTimeout(for: identity)
+
+        // Hider asks stillEligible on this turn right before hide(), and again
+        // right before any AX fallback, each in the same turn as the act. That is
+        // as close as macOS allows: there is no atomic "hide unless active", so a
+        // click on the app that WindowServer is delivering while hide() is being
+        // sent can still lose to it. The completion arrives on main, possibly
+        // ~2 s later, and only records the outcome; the next evaluate re-decides.
+        hider.hide(pid, stillEligible: { [weak self] in
+            self?.stillEligible(pid, trigger) ?? false
+        }, completion: { [weak self] result in
+            self?.hideFinished(pid, identity: identity, result: result,
+                               idle: idle, timeout: timeout, trigger: trigger)
+        })
+    }
+
+    /// Hider's last-moment check. It takes a fresh probe rather than reusing the
+    /// deciding evaluation's: focus, protection, pause, away or lock, the
+    /// fullscreen Space, config, and the app's own visibility can all change in
+    /// the turns between deciding and acting. Read-only towards the ledger, so it
+    /// never moves a timer; the next evaluate reconciles as usual.
+    private func stillEligible(_ pid: PID, _ trigger: HideTrigger) -> Bool {
+        guard running, !state.isAway else { return false }
+        reloadConfigIfChanged()
+        let observation = probe.observe()
+        guard let app = observation.apps.first(where: { $0.pid == pid }) else { return false }
+        let now = Date()
+        switch trigger {
+        case .timeout:
+            return Policy.status(of: app, state: state, observation: observation, config: config, now: now) == .due
+        case .hideOthers:
+            return Policy.mayHideNow(app, state: state, observation: observation, config: config, now: now)
+        }
+    }
+
     private func hideFinished(_ pid: PID, identity: AppIdentity, result: HideResult,
-                              idle: TimeInterval?, timeout: TimeInterval?, trigger: String) {
+                              idle: TimeInterval?, timeout: TimeInterval?, trigger: HideTrigger) {
         hidesInFlight.remove(pid)
         let app = "app=\"\(identity.name)\" pid=\(pid)"
         switch result {
         case .hidden:
             let idleText = idle.map { String(format: "%.1fs", $0) } ?? "-"
             let timeoutText = timeout.map(DurationFormat.format) ?? "-"
-            Log.info("hid \(app) idle=\(idleText) timeout=\(timeoutText) by=\(trigger)")
+            Log.info("hid \(app) idle=\(idleText) timeout=\(timeoutText) by=\(trigger.rawValue)")
         case .alreadyHidden:
             Log.debug("hide \(app): already hidden")
         case .gone:
@@ -421,6 +489,8 @@ final class Engine: EngineControl {
             // The user switched to it while the hide was in flight. Its
             // activation reset the timer; there is nothing to back off from.
             Log.debug("hide \(app): skipped, it became frontmost")
+        case .withdrawn:
+            Log.debug("hide \(app): withdrawn, no longer eligible by=\(trigger.rawValue)")
         case .refused(let reason):
             // Back off instead of retrying every evaluate (diagnosis R8). One line
             // per refusal; the next attempt is at least refusalBackoff away.
