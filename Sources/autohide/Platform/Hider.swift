@@ -6,7 +6,11 @@ import AppKit
 import ApplicationServices
 import AutohideCore
 
-enum HideResult: Equatable { case hidden, alreadyHidden, gone, refused(String) }
+/// How one hide request ended. `becameFrontmost` is deliberately not a
+/// refusal: the user is in that app (or just switched to it), its activation
+/// already reset the timer, and backing off would keep it on screen for five
+/// minutes after the user leaves it.
+enum HideResult: Equatable { case hidden, alreadyHidden, gone, becameFrontmost, refused(String) }
 
 /// Cmd-H for one app, with proof. `NSRunningApplication.hide()` returns false
 /// even when it works (spike.md Q1), so its return value is ignored and the
@@ -17,6 +21,8 @@ enum HideResult: Equatable { case hidden, alreadyHidden, gone, refused(String) }
 ///     hide(pid) ── hide() ──▶ confirm ≤ 1.0 s ──▶ .hidden / .gone
 ///                                 │ still visible
 ///                                 ▼
+///                  frontmost now? ── yes ──▶ .becameFrontmost
+///                                 │ no
 ///                  AX trusted? ── no ──▶ .refused
 ///                                 │ yes: kAXHidden (off main, 0.5 s timeout)
 ///                                 ▼
@@ -51,7 +57,7 @@ final class Hider {
         // Hiding the active app makes macOS activate another one: focus theft.
         // The Engine already guards this; the one place that hides re-checks.
         if Self.isFrontmost(app) {
-            return Self.deliverLater(.refused("frontmost"), completion)
+            return Self.deliverLater(.becameFrontmost, completion)
         }
 
         // Observers go in before hide() so an immediate didHide cannot slip by.
@@ -70,13 +76,14 @@ final class Hider {
 
     /// Runs on main once hide() went unconfirmed for the whole window.
     private func fallBackToAccessibility(_ attempt: HideAttempt) {
+        // The user may have switched to this app during the wait. Checked before
+        // anything else so that it is never reported as a refusal.
+        if Self.isFrontmost(attempt.app) {
+            return attempt.finish(.becameFrontmost)
+        }
         let window = String(format: "%.1f", Self.confirmWindow)
         guard Self.accessibilityTrusted else {
             return attempt.finish(.refused("still visible \(window)s after hide(); no Accessibility for the fallback"))
-        }
-        // The user may have switched to this app during the wait.
-        if Self.isFrontmost(attempt.app) {
-            return attempt.finish(.refused("became frontmost before the Accessibility fallback"))
         }
 
         let pid = attempt.app.processIdentifier
@@ -92,7 +99,9 @@ final class Hider {
                     return attempt.finish(.refused("hide() ignored; AX hide failed (AXError \(error.rawValue))"))
                 }
                 attempt.confirm(within: Self.confirmWindow) { attempt in
-                    attempt.finish(.refused("still visible after hide() and AX hide"))
+                    attempt.finish(Self.isFrontmost(attempt.app)
+                                   ? .becameFrontmost
+                                   : .refused("still visible after hide() and AX hide"))
                 }
             }
         }

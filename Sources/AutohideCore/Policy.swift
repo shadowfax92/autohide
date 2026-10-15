@@ -182,8 +182,28 @@ public struct PolicyState: Equatable {
         }
     }
 
-    public mutating func markRefused(_ pid: PID, at now: Date) {     // refusedUntil = now + refusalBackoff
+    /// refusedUntil = now + refusalBackoff, unless `pid` is the protected app.
+    /// Hider reports a refusal asynchronously (it confirms for up to ~1.5 s),
+    /// so it can land after the user switched to that very app. A refusal backs
+    /// off "until the app's next activation", and that activation has already
+    /// happened; recording it now would keep the app on screen for five
+    /// minutes after the user leaves it.
+    public mutating func markRefused(_ pid: PID, at now: Date) {
+        guard pid != protected else { return }
         timers[pid]?.refusedUntil = now + PolicyState.refusalBackoff
+    }
+
+    /// A config change that makes an app hideable (its exemption removed, or
+    /// newly inside `only_apps`) starts that app's timeout now, as coming on
+    /// screen does. Its timer kept running while it could not hide, so without
+    /// this it would hide the instant the exemption is lifted. Apps that were
+    /// already hideable keep their timers: a shorter timeout applies at once.
+    public mutating func configChanged(from old: Config, to new: Config, apps: [AppSnapshot], at now: Date) {
+        for app in apps where old.effectiveTimeout(for: app.identity) == nil
+            && new.effectiveTimeout(for: app.identity) != nil {
+            guard let lastActive = timers[app.pid]?.lastActive else { continue }
+            timers[app.pid]?.lastActive = max(lastActive, now)
+        }
     }
 
     public mutating func pause(until: Date?, at now: Date) {         // nil → distantFuture

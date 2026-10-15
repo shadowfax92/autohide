@@ -41,6 +41,13 @@ final class Engine: EngineControl {
     /// Floor for the next wake-up. A policy that kept returning a past nextCheck
     /// would otherwise spin the main thread; this caps it at four evaluations a second.
     static let minimumRearm: TimeInterval = 0.25
+    /// Follow-up probes after events whose effect reaches CGWindowList late: a
+    /// launched app's first window (often a second or more after didLaunch), an
+    /// unhidden app's windows, and the windows of a newly active Space. The
+    /// appearance rule starts an app's timeout when its window is first SEEN, so
+    /// without these it is first seen at the next heartbeat, and the app hides
+    /// up to `heartbeat` seconds late (measured: 16–20 s instead of 10 s).
+    static let settleDelays: [TimeInterval] = [0.25, 1, 2.5, 5, 10]
 
     private(set) var config: Config
     private let paths: ConfigPaths
@@ -59,6 +66,9 @@ final class Engine: EngineControl {
     /// (up to ~1.5 s), and without this a heartbeat or event evaluate in that
     /// window would issue a second hide for the same app.
     private var hidesInFlight: Set<PID> = []
+    /// Pending settle probes (see `settleDelays`), sorted. They share the one
+    /// deadline timer with hide deadlines; evaluate drops the ones that passed.
+    private var settleChecks: [Date] = []
     /// Identity of config.json at the last load. A cheap stat per evaluate picks
     /// up hand edits and CLI writes without a file watcher.
     private var configStamp: FileStamp?
@@ -106,6 +116,7 @@ final class Engine: EngineControl {
         heartbeatTimer = nil
         deadlineTimer?.invalidate()
         deadlineTimer = nil
+        settleChecks.removeAll()
         Log.info("engine stopped")
     }
 
@@ -131,6 +142,11 @@ final class Engine: EngineControl {
         }
 
         let observation = probe.observe()                          // 4
+        if observation.onFullscreenSpace != (lastObservation?.onFullscreenSpace ?? false) {
+            Log.info(observation.onFullscreenSpace
+                     ? "on a fullscreen Space (\(describeSpace())): not hiding"
+                     : "off the fullscreen Space (\(describeSpace())): hiding resumes")
+        }
         lastObservation = observation
         state.observe(observation, at: now)
 
@@ -141,7 +157,8 @@ final class Engine: EngineControl {
         for pid in decision.hide {                                 // 6
             requestHide(pid, observation: observation, now: now, trigger: "timeout")
         }
-        arm(decision.nextCheck, now: now)                          // 7
+        settleChecks.removeAll { $0 <= now }
+        arm([decision.nextCheck, settleChecks.first].compactMap { $0 }.min(), now: now)   // 7
     }
 
     func handle(_ request: IPC.Request) -> IPC.Response {   // IPCServer handler body
@@ -296,10 +313,20 @@ final class Engine: EngineControl {
         switch event {
         case .away(let reason): Log.info("away: \(reason.rawValue)")
         case .returned(let reason): Log.info("returned: \(reason.rawValue)")
+        case .spaceChanged:
+            // Rare, so always logged. It is also the live evidence for what
+            // SpaceProbe reads on a fullscreen Space, which spike.md Q4 never saw.
+            Log.info("space changed: \(describeSpace())")
         default: Log.debug("event \(event)")
         }
         let wasAway = state.isAway
         state.apply(event, at: now)
+        switch event {
+        case .launched, .unhidden, .spaceChanged, .returned:
+            scheduleSettleChecks(after: now)
+        default:
+            break
+        }
         // An activation is proof the user is back (design §7.2), even if the
         // matching wake/unlock notification never arrived.
         if wasAway, !state.isAway, case .activated = event {
@@ -320,6 +347,11 @@ final class Engine: EngineControl {
             state.apply(.returned(.lock), at: Date())
         }
         evaluate(reason: "heartbeat")
+    }
+
+    private func scheduleSettleChecks(after now: Date) {
+        settleChecks.append(contentsOf: Self.settleDelays.map { now.addingTimeInterval($0) })
+        settleChecks.sort()
     }
 
     /// One one-shot timer, replaced on every evaluate, so there is never more than
@@ -385,9 +417,14 @@ final class Engine: EngineControl {
             Log.debug("hide \(app): already hidden")
         case .gone:
             Log.debug("hide \(app): process gone")
+        case .becameFrontmost:
+            // The user switched to it while the hide was in flight. Its
+            // activation reset the timer; there is nothing to back off from.
+            Log.debug("hide \(app): skipped, it became frontmost")
         case .refused(let reason):
             // Back off instead of retrying every evaluate (diagnosis R8). One line
             // per refusal; the next attempt is at least refusalBackoff away.
+            // markRefused ignores the app if the user has switched to it since.
             state.markRefused(pid, at: Date())
             Log.warn("hide refused \(app) reason=\"\(reason)\" retry_in=\(DurationFormat.format(PolicyState.refusalBackoff))")
         }
@@ -409,6 +446,7 @@ final class Engine: EngineControl {
             let loaded = try ConfigStore.load(paths.configFile)
             configStamp = stamp
             if loaded != config {
+                state.configChanged(from: config, to: loaded, apps: lastObservation?.apps ?? [], at: Date())
                 config = loaded
                 Log.info("config reloaded (\(reason)): \(describe(loaded))")
             }
@@ -424,6 +462,7 @@ final class Engine: EngineControl {
     /// so the CLI, a hand edit, and the next start all see the same settings. A
     /// failed save still applies in memory (the user asked for it) and is logged.
     private func persist(_ updated: Config, change: String) {
+        state.configChanged(from: config, to: updated, apps: lastObservation?.apps ?? [], at: Date())
         config = updated
         do {
             try ConfigStore.save(updated, to: paths.configFile)
@@ -433,6 +472,10 @@ final class Engine: EngineControl {
             Log.error("config: \(change), but saving \(paths.configFile.path) failed: \(error)")
         }
         evaluate(reason: "config changed")
+    }
+
+    private func describeSpace() -> String {
+        "space type=\(SpaceProbe.activeSpaceType().map(String.init) ?? "unknown")"
     }
 
     private func describe(_ config: Config) -> String {

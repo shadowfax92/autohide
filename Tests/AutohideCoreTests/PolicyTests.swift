@@ -305,6 +305,24 @@ final class PolicyTests: XCTestCase {
         XCTAssertNil(desk.state.timers[preview]?.refusedUntil, "an unhide clears it too")
     }
 
+    func testB08_ARefusalThatLandsAfterTheUserSwitchedToTheAppIsDropped() {
+        // Hider confirms asynchronously: the user activated Notes after its hide
+        // was issued and before the refusal came back.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        XCTAssertEqual(desk.evaluate().hide, [notes, preview])
+        desk.frontmost = notes
+        desk.send(.activated(notes))
+        desk.state.markRefused(notes, at: desk.now)
+        XCTAssertNil(desk.state.timers[notes]?.refusedUntil)
+        desk.at(70)
+        desk.frontmost = terminal
+        desk.send(.activated(terminal))
+        _ = desk.evaluate()
+        XCTAssertEqual(desk.status(notes), .pending(hideAt: t0 + 130), "one timeout after the user leaves it, not 5 min")
+    }
+
     func testB09_AFullscreenSpaceSuspendsHiding() {
         var desk = desk()
         _ = desk.evaluate()
@@ -433,6 +451,31 @@ final class PolicyTests: XCTestCase {
         desk.at(500)
         desk.send(.returned(.sleep))
         XCTAssertEqual(desk.lastActive(notes), t0 + 500, "a missed willSleep must not cause a burst on wake")
+    }
+
+    func testRemovingAnExemptionStartsAFreshTimeoutInsteadOfHidingAtOnce() {
+        var desk = desk()
+        desk.config = Config(exempt: ["Notes"])
+        _ = desk.evaluate()
+        desk.at(300)
+        XCTAssertEqual(desk.evaluate().hide, [preview])
+        let old = desk.config
+        desk.config = Config(exempt: [])
+        desk.state.configChanged(from: old, to: desk.config, apps: desk.apps, at: desk.now)
+        XCTAssertEqual(desk.lastActive(notes), t0 + 300)
+        XCTAssertEqual(desk.lastActive(preview), t0, "an app that could already hide keeps its timer")
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [preview], nextCheck: t0 + 360))
+    }
+
+    func testJoiningOnlyAppsStartsAFreshTimeout() {
+        var desk = desk()
+        desk.config = Config(exempt: [], onlyApps: ["Preview"])
+        _ = desk.evaluate()
+        desk.at(300)
+        let old = desk.config
+        desk.config = Config(exempt: [], onlyApps: ["Preview", "Notes"])
+        desk.state.configChanged(from: old, to: desk.config, apps: desk.apps, at: desk.now)
+        XCTAssertEqual(desk.status(notes), .pending(hideAt: t0 + 360))
     }
 
     func testRefreshAllNeverMovesATimerBackwards() {
