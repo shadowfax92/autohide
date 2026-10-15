@@ -51,6 +51,7 @@ autohide app-timeout Mail 10m    # per-app timeout; `default` removes it
 autohide pause 30m               # or `pause` with no duration, until `resume`
 autohide resume
 autohide hide-others             # hide everything except the frontmost app now
+autohide quit                    # stop it until next login or `autohide restart`
 autohide config edit             # open config.json in $EDITOR
 ```
 
@@ -102,8 +103,19 @@ with Preview exempt.
 scripts/test-instance.sh start   # write the test config, start the daemon
 scripts/test-instance.sh e2e     # open the apps, PASS/FAIL that the right ones hide
 scripts/test-instance.sh list
+scripts/test-instance.sh term    # SIGTERM only: checks exit 0 and that the socket is gone
 scripts/test-instance.sh stop    # stop it and quit only the apps e2e opened
+
+# The same instance under a throwaway LaunchAgent (no inherited TCC grants,
+# real KeepAlive). Label com.autohide.test unless AUTOHIDE_LAUNCHD_LABEL says
+# otherwise; com.autohide.daemon is refused.
+scripts/test-instance.sh agent-start
+scripts/test-instance.sh agent-stop
 ```
+
+`e2e` reads hides from the daemon log rather than polling `list`, because
+every IPC request runs an evaluation and would mask late detection.
+`AUTOHIDE_DEBUG=1` logs every event and evaluation.
 
 Every CLI command takes `--config-dir DIR` to talk to a test instance instead.
 
