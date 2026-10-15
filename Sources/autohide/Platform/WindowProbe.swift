@@ -15,38 +15,36 @@ struct WindowProbe {
     /// helpers, not clutter. Counting them would keep an app "visible" forever.
     static let minimumWindowSide: CGFloat = 50
 
+    /// A full rescan of every running process is ~9 ms here, so it runs at most
+    /// this often; between scans RegularApps follows the regular apps only.
+    static let fullScanInterval: TimeInterval = 60
+
     /// Shared by copies of this struct (a reference), so the Engine's one
     /// probe keeps it across calls.
-    private let nonRegular = NonRegularMemo()
+    private let regularApps = RegularApps()
 
     /// Regular, non-terminated apps (excluding our own PID), on-screen layer-0
     /// windows ≥ 50×50 with alpha > 0 grouped by owner PID, frontmost, Space type,
     /// and lock state. Must take < 10 ms; no AX calls.
     func observe() -> Observation {
         let workspace = NSWorkspace.shared
-        let ownPID = ProcessInfo.processInfo.processIdentifier
         let withWindows = Self.pidsWithVisibleWindows()
+        let frontmost = workspace.frontmostApplication?.processIdentifier
 
-        let running = workspace.runningApplications
-        nonRegular.prune(keeping: running)
+        var candidates = withWindows
+        if let frontmost { candidates.insert(frontmost) }
 
-        var apps: [AppSnapshot] = []
-        for app in running {
-            if nonRegular.canSkip(app, visiblePIDs: withWindows) { continue }
-            let pid = app.processIdentifier
-            guard pid > 0, pid != ownPID, app.activationPolicy == .regular, !app.isTerminated else {
-                nonRegular.remember(app, pid: pid)
-                continue
-            }
+        let apps = regularApps.current(candidates: candidates).map { app -> AppSnapshot in
             // AppKit leads the window server: isHidden flips 5–60 ms before the
             // windows leave CGWindowList (spike.md gotcha 3). A hidden app is
             // never "visible", or the appearance rule would re-arm its timer.
+            let pid = app.processIdentifier
             let isHidden = app.isHidden
-            apps.append(AppSnapshot(pid: pid, identity: Self.identity(of: app), isHidden: isHidden,
-                                    hasVisibleWindow: !isHidden && withWindows.contains(pid)))
+            return AppSnapshot(pid: pid, identity: Self.identity(of: app), isHidden: isHidden,
+                               hasVisibleWindow: !isHidden && withWindows.contains(pid))
         }
 
-        return Observation(frontmost: workspace.frontmostApplication?.processIdentifier,
+        return Observation(frontmost: frontmost,
                            apps: apps,
                            onFullscreenSpace: SpaceProbe.activeSpaceIsFullscreen(),
                            screenLocked: Self.screenIsLocked())
@@ -108,44 +106,51 @@ struct WindowProbe {
     }
 }
 
-/// Remembers which NSRunningApplication instances were last seen as not
-/// regular, so observe() does not touch every process on every call.
+/// The set of regular apps, kept without touching every process on every call.
 ///
-/// Why: NSRunningApplication drops its cached properties at each main-run-loop
-/// turn, and the first read of ANY property (even processIdentifier) on an
-/// instance then costs ~37 µs to refetch. This Mac runs ~205 such processes,
-/// ~19 of them regular, so touching all of them made observe() ~8.5 ms;
-/// touching only the regular ones is ~1–2 ms.
+/// Why: NSWorkspace.runningApplications hands out NEW NSRunningApplication
+/// instances on every main-run-loop turn, and the first read of any property
+/// (even processIdentifier) on an instance costs ~37 µs to fetch. This Mac
+/// runs ~205 processes, ~19 of them regular, so scanning them all made
+/// observe() ~9–11 ms on every call. Held instances refresh per turn too, so
+/// the saving comes from touching only the regular ones (~1 ms).
 ///
-/// Safety: a remembered instance is re-checked whenever its PID owns a
-/// visible window, so an app that switches to .regular (menu-bar apps do,
-/// to show a settings window) is picked up as soon as it can clutter
-/// anything. A stale entry can only delay an app's first timer, never hide
-/// one. Entries hold the instance strongly, so its ObjectIdentifier cannot be
-/// reused by a new instance; prune() drops instances NSWorkspace no longer
-/// lists (they churn: ~25% were replaced within 3 s during a build).
-private final class NonRegularMemo {
-    private var entries: [ObjectIdentifier: (app: NSRunningApplication, pid: PID)] = [:]
+/// How it stays complete: a full scan seeds the set and repeats every
+/// `WindowProbe.fullScanInterval`. Between scans, every PID that owns a visible
+/// window or is frontmost is checked and admitted if regular. That catches
+/// launches and apps that switch to .regular (menu-bar apps do, to show a
+/// settings window) as soon as they can clutter anything. Held apps that quit
+/// or stop being regular are dropped on the next call. A regular app missing
+/// until the next scan has no visible window, so it could not be hidden
+/// anyway; the gap can only delay its timer, never cause a hide.
+///
+/// Main thread only (NSRunningApplication state is a main-run-loop snapshot).
+private final class RegularApps {
+    private var byPID: [PID: NSRunningApplication] = [:]
+    private var lastFullScan: TimeInterval?
+    private let ownPID = ProcessInfo.processInfo.processIdentifier
 
-    func prune(keeping running: [NSRunningApplication]) {
-        guard !entries.isEmpty else { return }
-        let live = Set(running.map(ObjectIdentifier.init))
-        entries = entries.filter { live.contains($0.key) }
-    }
-
-    /// True when `app` is known non-regular and owns no visible window.
-    /// Reads no property of `app`.
-    func canSkip(_ app: NSRunningApplication, visiblePIDs: Set<PID>) -> Bool {
-        let key = ObjectIdentifier(app)
-        guard let entry = entries[key] else { return false }
-        if visiblePIDs.contains(entry.pid) {
-            entries[key] = nil
-            return false
+    func current(candidates: Set<PID>) -> [NSRunningApplication] {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastFullScan, now - last < WindowProbe.fullScanInterval {
+            byPID = byPID.filter { isRegular($0.value) }
+            for pid in candidates where byPID[pid] == nil {
+                if let app = NSRunningApplication(processIdentifier: pid) { admit(app) }
+            }
+        } else {
+            byPID.removeAll()
+            for app in NSWorkspace.shared.runningApplications { admit(app) }
+            lastFullScan = now
         }
-        return true
+        return Array(byPID.values)
     }
 
-    func remember(_ app: NSRunningApplication, pid: PID) {
-        entries[ObjectIdentifier(app)] = (app, pid)
+    private func admit(_ app: NSRunningApplication) {
+        if isRegular(app) { byPID[app.processIdentifier] = app }
+    }
+
+    private func isRegular(_ app: NSRunningApplication) -> Bool {
+        let pid = app.processIdentifier
+        return pid > 0 && pid != ownPID && app.activationPolicy == .regular && !app.isTerminated
     }
 }
