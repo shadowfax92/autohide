@@ -22,7 +22,8 @@ CLI are the same binary. It is event-driven and uses ~0% CPU when idle.
 
 ## Install
 
-Requires Swift 5.9+ (Xcode or the Command Line Tools) and macOS 13+.
+Requires Xcode 26 to build the app (its `actool` compiles the icon); the app
+runs on macOS 13+. `make build` and `make test` need only Swift 5.9+.
 
 ```bash
 make install
@@ -133,3 +134,14 @@ make bundle   # build/autohide.app, signed and verified
 (`Policy.swift`), all unit-tested. `Sources/autohide` holds the platform layer
 (NSWorkspace events, window probe, hider), the runtime (engine, menu bar,
 IPC server), and the CLI.
+
+## Icon
+
+The app icon's source is `assets/AppIcon.icon`, an Icon Composer document:
+`icon.json` (background fill, layers, shadow) plus SVG layers in `Assets/` on a
+1024×1024 canvas. Edit it in Icon Composer, which ships with Xcode 26, or by
+hand. `make bundle` compiles it with `actool` into `Assets.car`, which macOS 26
+draws with the system's glass and dark/tinted styles, plus an `AppIcon.icns`
+for macOS 13–15. This needs Xcode 26: without it `make bundle` stops with an
+error. `make install` re-registers the app so Finder and the Dock show the new
+icon.

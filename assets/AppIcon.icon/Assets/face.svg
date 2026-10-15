@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The original "hidden face" design, formerly drawn by scripts/make-icon.swift, scaled
+       by 1.24: this canvas is the whole tile, and the system adds the icon's outer margin. -->
+  <g fill="none" stroke="#E8EBF2" stroke-width="43.2" stroke-linecap="round">
+    <path d="M836 512 A324 324 0 1 0 188 512 A324 324 0 1 0 836 512" stroke-dasharray="91.61 111.97"/>
+    <path d="M404.01 658.1 H619.99"/>
+  </g>
+  <g fill="#E8EBF2">
+    <circle cx="384.95" cy="404.01" r="39.38"/>
+    <circle cx="639.05" cy="404.01" r="39.38"/>
+  </g>
+</svg>
