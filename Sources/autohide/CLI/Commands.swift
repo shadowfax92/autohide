@@ -17,6 +17,7 @@ enum CLI {
     ///   list [--json]                   per-app state and seconds until hide
     ///   pause [DURATION] | resume
     ///   hide-others
+    ///   quit                            stop the daemon; exit 0, so launchd leaves it stopped
     ///   timeout [DURATION]              show / set default timeout (edits config, sends reload)
     ///   exempt [add|remove APP]         list / change exemptions
     ///   app-timeout APP DURATION|default
@@ -78,6 +79,11 @@ enum CLI {
             try expectNoArguments(rest)
             let hidden = try request(.hideOthers, context).hidden ?? 0
             print("Hid \(hidden) app\(hidden == 1 ? "" : "s").")
+            return 0
+        case "quit":
+            try expectNoArguments(rest)
+            _ = try request(.quit, context)
+            print("Stopped. It starts again at next login, or with `autohide restart`.")
             return 0
         case "timeout":
             return try timeout(rest, context)
@@ -504,6 +510,7 @@ enum CLI {
       pause [DURATION]             stop hiding, for DURATION or until resume
       resume                       hide again; every visible app starts a fresh timeout
       hide-others                  hide every visible, non-exempt app except the frontmost
+      quit                         stop the daemon until next login (or `autohide restart`)
 
     Settings (edit config.json, then ask the daemon to reload):
       timeout [DURATION]           show or set the default timeout
