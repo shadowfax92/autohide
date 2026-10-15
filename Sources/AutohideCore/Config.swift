@@ -106,6 +106,12 @@ public struct Config: Equatable {
 // so the file stays hand-editable, keys are snake_case, and a missing key falls
 // back to its default so an old or partial file still loads. Unknown keys are
 // ignored. A duration that does not parse is a corrupt file, not a default.
+//
+// Both directions hold durations to one rule: the value must come back
+// unchanged from format → parse. Decoding refuses anything else, and encoding
+// throws rather than write it, so a file the daemon or CLI saves always loads
+// again. Without it, a "0.0001s" timeout would load, an unrelated exemption
+// edit would save it back as "0s", and the next start would reject the file.
 extension Config: Codable {
     private enum CodingKeys: String, CodingKey {
         case timeout
@@ -119,7 +125,7 @@ extension Config: Codable {
         let defaults = Config.default
 
         func duration(_ text: String, _ key: CodingKeys) throws -> TimeInterval {
-            guard let seconds = DurationFormat.parse(text) else {
+            guard let seconds = DurationFormat.parse(text), Config.survivesSave(seconds) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: key, in: container, debugDescription: "invalid duration \"\(text)\"")
             }
@@ -142,9 +148,26 @@ extension Config: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(DurationFormat.format(timeout), forKey: .timeout)
+
+        func duration(_ seconds: TimeInterval, _ key: CodingKeys) throws -> String {
+            guard Config.survivesSave(seconds) else {
+                throw EncodingError.invalidValue(seconds, EncodingError.Context(
+                    codingPath: container.codingPath + [key],
+                    debugDescription: "duration \(seconds)s would not load back (allowed: whole milliseconds, 1ms to 7 days)"))
+            }
+            return DurationFormat.format(seconds)
+        }
+
+        try container.encode(duration(timeout, .timeout), forKey: .timeout)
         try container.encode(exempt, forKey: .exempt)
-        try container.encode(appTimeouts.mapValues(DurationFormat.format), forKey: .appTimeouts)
+        try container.encode(appTimeouts.mapValues { try duration($0, .appTimeouts) }, forKey: .appTimeouts)
         try container.encode(onlyApps, forKey: .onlyApps)
+    }
+
+    /// True when `seconds` is written and read back as exactly the same value.
+    /// Every value DurationFormat.parse returns qualifies; checking it on both
+    /// sides keeps the guarantee if parse or format ever drift apart.
+    private static func survivesSave(_ seconds: TimeInterval) -> Bool {
+        DurationFormat.parse(DurationFormat.format(seconds)) == seconds
     }
 }
