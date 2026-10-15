@@ -1,21 +1,123 @@
 {
   "fill" : {
     "linear-gradient" : [
-      "srgb:0.18400,0.20800,0.28200,1.00000",
-      "srgb:0.07800,0.08600,0.11800,1.00000"
+      "display-p3:0.48000,0.57000,0.88000,1.00000",
+      "display-p3:0.18000,0.14000,0.40000,1.00000"
     ],
     "orientation" : {
-      "start" : { "x" : 0.5, "y" : 0 },
-      "stop" : { "x" : 0.5, "y" : 1 }
+      "start" : {
+        "x" : 0.2,
+        "y" : 0
+      },
+      "stop" : {
+        "x" : 0.8,
+        "y" : 1
+      }
     }
   },
   "groups" : [
     {
       "layers" : [
-        { "image-name" : "face.svg", "name" : "face", "glass" : false }
+        {
+          "glass" : false,
+          "image-name" : "front-controls.svg",
+          "name" : "front-controls"
+        },
+        {
+          "glass" : false,
+          "image-name" : "front-titlebar.svg",
+          "name" : "front-titlebar"
+        },
+        {
+          "glass" : true,
+          "image-name" : "front.svg",
+          "name" : "front"
+        }
       ],
-      "shadow" : { "kind" : "neutral", "opacity" : 0.5 }
+      "name" : "Front",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.36000,0.40000,0.75000,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "back-1.svg",
+          "name" : "back-1",
+          "opacity-specializations" : [
+            {
+              "value" : 0.78
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.88
+            }
+          ]
+        }
+      ],
+      "name" : "Back 1",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.3
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.36000,0.40000,0.75000,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "back-2.svg",
+          "name" : "back-2",
+          "opacity-specializations" : [
+            {
+              "value" : 0.46
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.6
+            }
+          ]
+        }
+      ],
+      "name" : "Back 2",
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0.5
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
     }
   ],
-  "supported-platforms" : { "squares" : "shared" }
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
 }

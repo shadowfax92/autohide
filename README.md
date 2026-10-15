@@ -40,7 +40,8 @@ the old Go version and stops its daemon and helper.
 
 ## Use
 
-Use the menu-bar icon (an eye with a slash through it) or the CLI:
+Use the menu-bar icon (a window with two fainter windows receding behind it;
+while paused, a pause mark replaces them) or the CLI:
 
 ```bash
 autohide status                  # is it running, and with what settings
@@ -139,9 +140,21 @@ IPC server), and the CLI.
 
 The app icon's source is `assets/AppIcon.icon`, an Icon Composer document:
 `icon.json` (background fill, layers, shadow) plus SVG layers in `Assets/` on a
-1024×1024 canvas. Edit it in Icon Composer, which ships with Xcode 26, or by
+1024×1024 canvas. The design ("Recede") shows the window in use crisp in front,
+while the windows behind it step back into the dark corner, smaller and fainter.
+Each shape is one SVG; its opacity, glass and dark-mode colour are set in
+`icon.json`. Edit it in Icon Composer, which ships with Xcode 26, or by
 hand. `make bundle` compiles it with `actool` into `Assets.car`, which macOS 26
 draws with the system's glass and dark/tinted styles, plus an `AppIcon.icns`
 for macOS 13–15. This needs Xcode 26: without it `make bundle` stops with an
 error. `make install` re-registers the app so Finder and the Dock show the new
 icon.
+
+The menu-bar glyphs live in `assets/MenuBar.xcassets` as two 18×18 template
+SVGs, `menubar-active` and `menubar-paused`, kept as vectors. Template means
+macOS uses only their alpha and supplies the colour: the window in use is
+opaque, the two behind it are 55% and 25% opaque, and the whole glyph follows
+light, dark and tinted menu bars. The same `actool` call compiles them into
+`Assets.car`. A binary run outside the
+bundle (`.build/release/autohide`) has no `Assets.car` and falls back to the SF
+Symbols `eye.slash` and `pause.circle`.

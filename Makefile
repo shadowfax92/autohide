@@ -7,11 +7,12 @@
 #   make uninstall stop the LaunchAgent and remove the app; ~/.config/autohide is kept
 #
 # The app icon's source is assets/AppIcon.icon, an Icon Composer document
-# (icon.json plus SVG layers). `bundle` compiles it with Xcode 26's actool into
-# Contents/Resources: Assets.car, which macOS 26 draws with the system's glass,
-# squircle mask and dark/tinted styles, and AppIcon.icns, the flattened fallback
-# that macOS 13-15 read. build and test need only Swift; bundle and install
-# need Xcode 26.
+# (icon.json plus SVG layers); the menu bar glyphs are template SVGs in
+# assets/MenuBar.xcassets. `bundle` compiles both in one Xcode 26 actool call
+# into Contents/Resources: Assets.car, which holds the glyphs and the icon that
+# macOS 26 draws with the system's glass, squircle mask and dark/tinted styles,
+# and AppIcon.icns, the flattened fallback that macOS 13-15 read. build and test
+# need only Swift; bundle and install need Xcode 26.
 #
 # Signing is what keeps permissions alive. An ad-hoc signature (`-`) makes the
 # designated requirement the binary's CDHash, so every rebuild silently voids
@@ -31,6 +32,8 @@ RELEASE_BIN := .build/release/$(APP_NAME)
 # Absolute on purpose: actool hands the .icon to a separate exporter process
 # that cannot open a relative path, and then writes nothing yet still exits 0.
 ICON_SRC    := $(CURDIR)/assets/AppIcon.icon
+# MenuBar.swift loads these by name (NSImage(named:)) from the bundle's Assets.car.
+GLYPH_SRC   := $(CURDIR)/assets/MenuBar.xcassets
 # actool's by-products stay outside the bundle, where they cannot break its seal.
 ICON_PLIST  := $(BUILD_DIR)/AppIcon-partial.plist
 ACTOOL_LOG  := $(BUILD_DIR)/actool.log
@@ -66,24 +69,25 @@ test:
 #
 # actool's exit status is not trusted. It exits 0 having written nothing when
 # its icon exporter fails (a malformed icon.json, a layer naming a missing SVG),
-# and an Xcode older than 26 cannot read a .icon at all, so the icon step is
-# judged by whether Assets.car and AppIcon.icns exist; Info.plist.in points at
-# them through CFBundleIconName and CFBundleIconFile. A clean compile logs only
-# its output list, so any warning or notice is printed even when the outputs
-# exist: an edited icon cannot degrade quietly.
+# and an Xcode older than 26 cannot read a .icon at all, so the asset step is
+# judged by whether Assets.car and AppIcon.icns exist. The glyph catalog goes
+# through the same call, so Resources keeps exactly those two files.
+# Info.plist.in points at them through CFBundleIconName and CFBundleIconFile.
+# A clean compile logs only its output list, so any warning or notice is printed
+# even when the outputs exist: an edited icon or glyph cannot degrade quietly.
 bundle: build
 	rm -rf $(BUNDLE)
 	mkdir -p $(BUNDLE)/Contents/MacOS $(BUNDLE)/Contents/Resources
 	cp $(RELEASE_BIN) $(BUNDLE)/Contents/MacOS/$(APP_NAME)
-	@echo "actool: compiling assets/AppIcon.icon"
-	@xcrun actool $(ICON_SRC) --compile $(BUNDLE)/Contents/Resources \
+	@echo "actool: compiling assets/AppIcon.icon and assets/MenuBar.xcassets"
+	@xcrun actool $(ICON_SRC) $(GLYPH_SRC) --compile $(BUNDLE)/Contents/Resources \
 		--platform macosx --minimum-deployment-target 13.0 --app-icon AppIcon \
 		--target-device mac --output-partial-info-plist $(ICON_PLIST) \
 		>$(ACTOOL_LOG) 2>&1; \
 	if [ ! -s $(BUNDLE)/Contents/Resources/Assets.car ] \
 	   || [ ! -s $(BUNDLE)/Contents/Resources/AppIcon.icns ]; then \
 		cat $(ACTOOL_LOG) >&2; \
-		echo "error: actool could not compile assets/AppIcon.icon (its output, if any, is above)." >&2; \
+		echo "error: actool could not compile assets/AppIcon.icon and assets/MenuBar.xcassets (its output, if any, is above)." >&2; \
 		echo "       A .icon needs actool from Xcode 26 or later; the active developer dir is $$(xcode-select -p 2>/dev/null || echo unset)." >&2; \
 		echo "       Select Xcode 26 with: sudo xcode-select -s /Applications/Xcode.app" >&2; \
 		exit 1; \

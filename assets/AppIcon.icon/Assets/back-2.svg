@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Second window behind: 0.4 of the front, past back-1's corner, so at 16 px it is
+       a separate, dimmer step rather than part of one smear. -->
+  <rect x="685" y="680" width="240" height="165" rx="32" fill="#FFFFFF"/>
+</svg>
