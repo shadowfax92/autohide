@@ -139,7 +139,10 @@ IPC server), and the CLI.
 
 The app icon's source is `assets/AppIcon.icon`, an Icon Composer document:
 `icon.json` (background fill, layers, shadow) plus SVG layers in `Assets/` on a
-1024×1024 canvas. Edit it in Icon Composer, which ships with Xcode 26, or by
+1024×1024 canvas. The design ("Recede") shows the window in use crisp in front,
+while the windows behind it step back into the dark corner, smaller and fainter.
+Each shape is one SVG; its opacity, glass and dark-mode colour are set in
+`icon.json`. Edit it in Icon Composer, which ships with Xcode 26, or by
 hand. `make bundle` compiles it with `actool` into `Assets.car`, which macOS 26
 draws with the system's glass and dark/tinted styles, plus an `AppIcon.icns`
 for macOS 13–15. This needs Xcode 26: without it `make bundle` stops with an

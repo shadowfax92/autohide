@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Pale title band: makes the front shape a window, not a card, and stays a clean
+       light strip at 32 px. The clip is the front window's shape (keep it in step with front.svg). -->
+  <clipPath id="window">
+    <rect x="90" y="175" width="600" height="412" rx="80"/>
+  </clipPath>
+  <rect x="90" y="175" width="600" height="64" fill="#DCE0F7" clip-path="url(#window)"/>
+</svg>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- First window behind: 0.6 of the front, stepped down and right far enough to keep
+       about two pixels of its own at 16 px. Its fade comes from layer opacity in icon.json. -->
+  <rect x="445" y="460" width="360" height="247" rx="48" fill="#FFFFFF"/>
+</svg>

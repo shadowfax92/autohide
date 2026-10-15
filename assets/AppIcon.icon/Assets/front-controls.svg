@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Window controls, one shade darker than the title band: visible from 128 px up,
+       and below that they melt into the band instead of smudging. -->
+  <circle cx="146" cy="207" r="15" fill="#A9B1E6"/>
+  <circle cx="192" cy="207" r="15" fill="#A9B1E6"/>
+  <circle cx="238" cy="207" r="15" fill="#A9B1E6"/>
+</svg>
