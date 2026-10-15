@@ -86,11 +86,13 @@ final class WorkspaceEvents {
 }
 
 /// Screen lock and unlock arrive only as distributed notifications from
-/// loginwindow. NSApplication suspends distributed delivery while the app is
-/// inactive, and an accessory agent is practically never active, so the
-/// default (coalescing) registration would hold these until the user next
-/// clicked our menu. `.deliverImmediately` exists only on the selector-based
-/// API, hence this small NSObject.
+/// loginwindow. AppKit suspends distributed delivery while an app is inactive
+/// (Foundation docs, `DistributedNotificationCenter.suspended`). A
+/// never-activated agent still received a default registration at once on
+/// macOS 26.6, but once the agent has been active (a menu action can do it)
+/// and resigns, a coalescing observer would hold lock/unlock until the next
+/// activation. `.deliverImmediately` removes that dependency, and it exists
+/// only on the selector-based API, hence this small NSObject.
 private final class LockRelay: NSObject {
     private static let mapping: [NSNotification.Name: PolicyEvent] = [
         NSNotification.Name("com.apple.screenIsLocked"): .away(.lock),
@@ -115,8 +117,8 @@ private final class LockRelay: NSObject {
 
     @objc private func receive(_ note: Notification) {
         guard let event = Self.mapping[note.name] else { return }
-        // Distributed notifications are posted from the main run loop in
-        // practice; the hop keeps the "onEvent runs on main" promise if not.
+        // Observed on main for an observer registered on main; the hop keeps
+        // the "onEvent runs on main" promise if that ever changes.
         if Thread.isMainThread {
             forward(event)
         } else {
