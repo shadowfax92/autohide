@@ -12,6 +12,8 @@
 #   scripts/test-instance.sh status       `autohide status` for the instance (args pass through)
 #   scripts/test-instance.sh list         `autohide list` for the instance (args pass through)
 #   scripts/test-instance.sh e2e          launch the apps, assert that the allowlisted ones hide
+#   scripts/test-instance.sh pause-queue  launch the apps, pause while hide-others' hides are queued,
+#                                         assert the queued ones are dropped and later hide on a fresh timeout
 #   scripts/test-instance.sh agent-start  run the instance as a throwaway LaunchAgent instead
 #   scripts/test-instance.sh agent-stop   boot that LaunchAgent out and delete its plist
 #
@@ -21,7 +23,7 @@
 #   AUTOHIDE_LAUNCHD_LABEL  label for agent-start/agent-stop (default com.autohide.test;
 #                           the real com.autohide.daemon is refused)
 #   AUTOHIDE_DEBUG=1        the daemon also logs every event and evaluation
-#   E2E_WAIT                seconds e2e watches for hides (default 15)
+#   E2E_WAIT                seconds e2e (and pause-queue, after its resume) watches for hides (default 15)
 
 set -euo pipefail
 
@@ -31,9 +33,12 @@ BIN=${AUTOHIDE_BIN:-$REPO/.build/release/autohide}
 WAIT=${E2E_WAIT:-15}
 LABEL=${AUTOHIDE_LAUNCHD_LABEL:-com.autohide.test}
 
-APPS=(Calculator Chess TextEdit Preview)
-SHOULD_HIDE=(Calculator Chess TextEdit)
-EXEMPT=Preview
+# Not Chess: on macOS 26, activating a game summons GameOverlayUI, which got
+# in the way of live runs.
+# The exempt app is launched last, so a broken exemption shows within WAIT.
+APPS=(Calculator TextEdit Preview "Font Book")
+SHOULD_HIDE=(Calculator TextEdit Preview)
+EXEMPT="Font Book"
 
 PIDFILE=$DIR/daemon.pid
 EXITFILE=$DIR/daemon.exit     # the daemon's exit status, written by the wrapper in start
@@ -71,7 +76,7 @@ write_config() {
 {
   "app_timeouts" : {},
   "exempt" : ["$EXEMPT"],
-  "only_apps" : ["TextEdit", "Calculator", "Chess", "Preview"],
+  "only_apps" : ["TextEdit", "Calculator", "Preview", "Font Book"],
   "timeout" : "10s"
 }
 EOF
@@ -216,6 +221,18 @@ hid_line() {
     tail -n "+$(($2 + 1))" "$LOG" 2>/dev/null | grep -m 1 "INFO hid app=\"$1\"" || true
 }
 
+# The first capture group of sed pattern $1 in text $2; empty if none.
+first_match() {
+    sed -n "s/$1/\\1/p" <<<"$2" | sed -n 1p
+}
+
+# The STATE column of `list` for one app. Names can contain spaces, so the
+# name is matched as a prefix and the columns after it are counted.
+app_state() {
+    ah list 2>/dev/null | awk -v app="$1" '
+        substr($0, 1, length(app) + 1) == app " " { $0 = substr($0, length(app) + 2); print $2; exit }'
+}
+
 # Hides are read from the daemon's log, not by polling `list`: every IPC
 # request runs an evaluation, and a poll every 0.5 s would mask exactly the
 # detection delays this test exists to catch.
@@ -231,8 +248,8 @@ cmd_e2e() {
     start=$(date +%s)
     for app in "${APPS[@]}"; do launch "$app"; done
 
-    # Watch the whole window, not just until the three hide: Preview launched
-    # last, so if its exemption were broken it would hide a moment later.
+    # Watch the whole window, not just until the three hide: the exempt app
+    # launched last, so if its exemption were broken it would hide a moment later.
     local -a hidden_at=() hidden_line=()
     local preview_hid="" now elapsed i line
     while :; do
@@ -250,8 +267,7 @@ cmd_e2e() {
     done
 
     echo "results after ${WAIT}s:"
-    local failures=0 snapshot
-    snapshot=$(ah list 2>/dev/null || true)
+    local failures=0
     for i in "${!SHOULD_HIDE[@]}"; do
         app=${SHOULD_HIDE[$i]}
         if [ -n "${hidden_at[$i]:-}" ]; then
@@ -262,12 +278,111 @@ cmd_e2e() {
         fi
     done
     if [ -z "$preview_hid" ]; then
-        echo "PASS  $EXEMPT not hidden: $(printf '%s\n' "$snapshot" | awk -v app="$EXEMPT" '$1 == app { print $3 }')"
+        echo "PASS  $EXEMPT not hidden: $(app_state "$EXEMPT")"
     else
         echo "FAIL  $EXEMPT is exempt but was hidden at ${preview_hid}s"
         failures=$((failures + 1))
     fi
 
+    echo "clean up with: $0 stop"
+    [ "$failures" -eq 0 ]
+}
+
+# Sends hide-others and pause on two connections, both opened before either
+# request is written. The server serves connections one at a time in accept
+# order, so pause reaches main right after hide-others' reply, while the hides
+# it queued are still going out one per run-loop turn.
+hide_others_then_pause() {
+    python3 -I - "$DIR/autohide.sock" <<'PY'
+import socket, sys
+first, second = (socket.socket(socket.AF_UNIX) for _ in range(2))
+first.connect(sys.argv[1])
+second.connect(sys.argv[1])
+first.sendall(b'{"command":"hide-others"}\n')
+second.sendall(b'{"command":"pause"}\n')
+for conn in (first, second):
+    reply = b""
+    while not reply.endswith(b"\n"):
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        reply += chunk
+    print(reply.decode().strip()[:160])
+PY
+}
+
+# Hides that hide-others queued but that had not reached Hider when a pause
+# landed must be dropped. Otherwise a resume that
+# beats their turn lets the pre-pause command hide apps whose timers the
+# resume just refreshed. Pass: the dropped apps hide later by=timeout, a full
+# timeout after the resume.
+cmd_pause_queue() {
+    daemon_pid >/dev/null || cmd_start >/dev/null
+    mkdir -p "$DIR"
+    make_fixtures
+    echo "launching throwaway apps in the background:"
+    local app
+    for app in "${APPS[@]}"; do launch "$app"; done
+
+    # Every app that should hide must be on screen and counting down. Polling
+    # `list` runs evaluations, which is fine here: no timing is measured yet.
+    local waiting=() _
+    for _ in $(seq 50); do
+        waiting=()
+        for app in "${SHOULD_HIDE[@]}"; do
+            [ "$(app_state "$app")" = pending ] || waiting+=("$app")
+        done
+        [ "${#waiting[@]}" -eq 0 ] && break
+        sleep 0.2
+    done
+    [ "${#waiting[@]}" -eq 0 ] || die "not on screen and pending: ${waiting[*]} (\`stop\` first if they are hidden)"
+
+    local mark
+    mark=$(wc -l <"$LOG" | tr -d ' ')
+    echo "hide-others, then pause, back to back:"
+    hide_others_then_pause | sed 's/^/  /'
+    sleep 1.5                     # anything already in Hider confirms within 1 s
+    ah resume >/dev/null
+    echo "resumed; watching ${WAIT}s for the dropped apps to hide on a fresh timeout"
+    sleep "$WAIT"
+
+    # Here-strings, not pipes from printf: under pipefail, a reader that stops
+    # early would fail the pipeline with SIGPIPE.
+    local after queued dropped early failures=0
+    after=$(tail -n "+$((mark + 1))" "$LOG")
+    queued=$(first_match '.*hide-others: queued \([0-9]*\) hides.*' "$after")
+    dropped=$(first_match '.*paused until resumed; dropped \([0-9]*\) queued hides.*' "$after")
+    early=$(grep -c 'INFO hid app=.* by=hide-others' <<<"$after" || true)
+    queued=${queued:-0} dropped=${dropped:-0}
+
+    echo "results:"
+    if [ "$queued" -eq "${#SHOULD_HIDE[@]}" ] && [ "$dropped" -ge 1 ]; then
+        echo "PASS  hide-others queued $queued hides; the pause dropped $dropped before their turn"
+    else
+        echo "FAIL  hide-others queued $queued, the pause dropped $dropped (want ${#SHOULD_HIDE[@]} and >= 1)"
+        failures=$((failures + 1))
+    fi
+    if [ "$early" -eq $((queued - dropped)) ]; then
+        echo "PASS  $early hide-others hide(s) were already in Hider; none of the dropped ones ran"
+    else
+        echo "FAIL  $early hides by=hide-others, expected $((queued - dropped))"
+        failures=$((failures + 1))
+    fi
+    # The resume line splits the log: a dropped app must hide after it, by
+    # its timer, idle about one full timeout.
+    local after_resume line idle
+    after_resume=$(sed -n '/INFO resumed:/,$p' <<<"$after")
+    for app in "${SHOULD_HIDE[@]}"; do
+        grep -q "INFO hid app=\"$app\".* by=hide-others" <<<"$after" && continue
+        line=$(grep -m 1 "INFO hid app=\"$app\"" <<<"$after_resume" || true)
+        idle=$(first_match '.* idle=\([0-9]*\)\.[0-9]*s .*' "$line")
+        if [[ "$line" == *"by=timeout"* ]] && [ "${idle:-0}" -ge 9 ]; then
+            echo "PASS  $app hid after the resume on a fresh timeout: ${line#* INFO }"
+        else
+            echo "FAIL  $app: ${line:-no hide within ${WAIT}s of the resume}"
+            failures=$((failures + 1))
+        fi
+    done
     echo "clean up with: $0 stop"
     [ "$failures" -eq 0 ]
 }
@@ -279,7 +394,8 @@ case "${1:-}" in
     status) shift; ah status "$@" ;;
     list) shift; ah list "$@" ;;
     e2e) cmd_e2e ;;
+    pause-queue) cmd_pause_queue ;;
     agent-start) cmd_agent_start ;;
     agent-stop) cmd_agent_stop ;;
-    *) echo "usage: $0 start|stop|term|status|list|e2e|agent-start|agent-stop" >&2; exit 2 ;;
+    *) echo "usage: $0 start|stop|term|status|list|e2e|pause-queue|agent-start|agent-stop" >&2; exit 2 ;;
 esac

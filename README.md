@@ -97,15 +97,16 @@ loudly. To sign with another identity, pass `SIGN_ID="…"`.
 
 `scripts/test-instance.sh` runs a second autohide beside the real one. It has
 its own config directory, no menu-bar item, a 10 s timeout, and an allowlist
-(`only_apps`) of throwaway apps: TextEdit, Calculator, Chess, and Preview,
-with Preview exempt.
+(`only_apps`) of throwaway apps: Calculator, TextEdit, Preview, and Font
+Book, with Font Book exempt.
 
 ```bash
 scripts/test-instance.sh start   # write the test config, start the daemon
 scripts/test-instance.sh e2e     # open the apps, PASS/FAIL that the right ones hide
+scripts/test-instance.sh pause-queue   # PASS/FAIL that a pause drops hides still queued
 scripts/test-instance.sh list
 scripts/test-instance.sh term    # SIGTERM only: checks exit 0 and that the socket is gone
-scripts/test-instance.sh stop    # stop it and quit only the apps e2e opened
+scripts/test-instance.sh stop    # stop it and quit only the apps the script opened
 
 # The same instance under a throwaway LaunchAgent (no inherited TCC grants,
 # real KeepAlive). Label com.autohide.test unless AUTOHIDE_LAUNCHD_LABEL says
