@@ -93,6 +93,22 @@ struct WindowProbe {
         return (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
     }
 
+    /// What the window server says about the user right now, for
+    /// PolicyState.reconcileAway. Cheap, permission-free reads that mean
+    /// something even while away (unlike the window list).
+    static func presence() -> Presence {
+        let session = CGSessionCopyCurrentDictionary() as NSDictionary?
+        // kCGAnyInputEventType is ~0; if it ever stops mapping, there is no
+        // proof of input, which only delays recovery to the next activation.
+        let lastInput = CGEventType(rawValue: ~0).map {
+            Date(timeIntervalSinceNow: -CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0))
+        }
+        return Presence(onConsole: (session?[kCGSessionOnConsoleKey] as? Bool) ?? false,
+                        screenLocked: screenIsLocked(),
+                        displayAwake: CGDisplayIsAsleep(CGMainDisplayID()) == 0,
+                        lastInput: lastInput)
+    }
+
     /// nil for nil, empty, or a string of only whitespace and invisible format
     /// characters (U+200E and friends), so such a name falls through to the
     /// next candidate. A real name is returned unchanged; AppMatch normalizes.

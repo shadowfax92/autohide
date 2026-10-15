@@ -243,6 +243,113 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(desk.status(notes), .away)
     }
 
+    func testB06_ALockSeenOnlyByTheProbeIsRecordedAndTheUnlockGivesFreshTimeouts() {
+        // The lock notification was missed: only the observation says "locked".
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(10)
+        desk.locked = true
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: nil))
+        XCTAssertEqual(desk.state.awayReasons, [.lock])
+        desk.at(130)
+        desk.locked = false
+        // The Engine's heartbeat feeds the unlocked observation in while away.
+        desk.state.observe(desk.observation, at: desk.now)
+        XCTAssertFalse(desk.state.isAway)
+        XCTAssertEqual(desk.lastActive(notes), t0 + 130)
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: t0 + 190), "no burst of hides on unlock")
+    }
+
+    func testB06_StartingWhileLockedRecordsTheLockAndIgnoresTheFrontmost() {
+        var desk = desk()
+        desk.locked = true
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: nil))
+        XCTAssertEqual(desk.state.awayReasons, [.lock])
+        XCTAssertNil(desk.state.protected, "an app reported frontmost behind the lock screen was not activated")
+        desk.at(120)
+        desk.locked = false
+        desk.state.observe(desk.observation, at: desk.now)
+        XCTAssertEqual(desk.state.protected, terminal)
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: t0 + 180))
+    }
+
+    // MARK: - Missed return notifications (PolicyState.reconcileAway)
+
+    private func present(lastInput: Date?, onConsole: Bool = true, locked: Bool = false,
+                         displayAwake: Bool = true) -> Presence {
+        Presence(onConsole: onConsole, screenLocked: locked, displayAwake: displayAwake, lastInput: lastInput)
+    }
+
+    func testB06_InputAfterAMissedDisplayWakeEndsAwayWithFreshTimeouts() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(10)
+        desk.send(.away(.displaySleep))
+        XCTAssertEqual(desk.state.awaySince, t0 + 10)
+        desk.at(400)   // screensDidWake never arrived; the user is typing again
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: t0 + 395), at: desk.now), [.displaySleep])
+        XCTAssertFalse(desk.state.isAway)
+        XCTAssertNil(desk.state.awaySince)
+        XCTAssertEqual(desk.lastActive(notes), t0 + 400)
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [], nextCheck: t0 + 460), "no burst of hides")
+    }
+
+    func testB06_EveryRecordedReasonIsClearedTogether() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.send(.away(.displaySleep))
+        desk.send(.away(.lock))
+        desk.at(100)
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: t0 + 99), at: desk.now), [.displaySleep, .lock])
+        XCTAssertFalse(desk.state.isAway)
+    }
+
+    func testB06_InputFromBeforeTheAwayIsNoProof() {
+        // willSleep at t10 right after the lid-close input at t9: a heartbeat in
+        // the seconds before the Mac actually sleeps must not end the sleep.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(10)
+        desk.send(.away(.sleep))
+        desk.at(12)
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: t0 + 9), at: desk.now), [])
+        XCTAssertEqual(desk.state.awayReasons, [.sleep])
+    }
+
+    func testB06_NoReturnWithoutProof() {
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.send(.away(.displaySleep))
+        desk.at(100)
+        let recent = t0 + 99
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: recent, displayAwake: false), at: desk.now), [])
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: recent, locked: true), at: desk.now), [])
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: recent, onConsole: false), at: desk.now), [],
+                       "switched to another user's session")
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: t0 + 60), at: desk.now), [],
+                       "input older than presenceWindow")
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: nil), at: desk.now), [], "input time unknown")
+        XCTAssertEqual(desk.state.awayReasons, [.displaySleep])
+    }
+
+    func testB06_AnUnlockedScreenAloneEndsALockOnlyAway() {
+        // Unlocking is the return; an Apple Watch unlock involves no input.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.send(.away(.lock))
+        desk.at(300)
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: nil), at: desk.now), [.lock])
+        XCTAssertEqual(desk.lastActive(notes), t0 + 300)
+    }
+
+    func testB06_ReconcileDoesNothingWhenNotAway() {
+        var desk = desk()
+        _ = desk.evaluate()
+        let before = desk.state
+        XCTAssertEqual(desk.state.reconcileAway(present(lastInput: t0), at: t0 + 5), [])
+        XCTAssertEqual(desk.state, before)
+    }
+
     func testB07_PauseSuspendsHidingUntilPausedUntil() {
         var desk = desk()
         _ = desk.evaluate()
@@ -303,6 +410,24 @@ final class PolicyTests: XCTestCase {
         desk.state.markRefused(preview, at: desk.now)
         desk.send(.unhidden(preview))
         XCTAssertNil(desk.state.timers[preview]?.refusedUntil, "an unhide clears it too")
+    }
+
+    func testB08_ARefusalThatLandsAfterTheUserSwitchedToTheAppIsDropped() {
+        // Hider confirms asynchronously: the user activated Notes after its hide
+        // was issued and before the refusal came back.
+        var desk = desk()
+        _ = desk.evaluate()
+        desk.at(60)
+        XCTAssertEqual(desk.evaluate().hide, [notes, preview])
+        desk.frontmost = notes
+        desk.send(.activated(notes))
+        desk.state.markRefused(notes, at: desk.now)
+        XCTAssertNil(desk.state.timers[notes]?.refusedUntil)
+        desk.at(70)
+        desk.frontmost = terminal
+        desk.send(.activated(terminal))
+        _ = desk.evaluate()
+        XCTAssertEqual(desk.status(notes), .pending(hideAt: t0 + 130), "one timeout after the user leaves it, not 5 min")
     }
 
     func testB09_AFullscreenSpaceSuspendsHiding() {
@@ -433,6 +558,57 @@ final class PolicyTests: XCTestCase {
         desk.at(500)
         desk.send(.returned(.sleep))
         XCTAssertEqual(desk.lastActive(notes), t0 + 500, "a missed willSleep must not cause a burst on wake")
+    }
+
+    func testMayHideNowIgnoresTimersButObeysEverySuspension() {
+        var desk = Desk([app(101, "Terminal"), app(102, "Notes"), app(103, "Finder"),
+                         app(104, "Chess", hidden: true), app(105, "Preview", visible: false), app(106, "TextEdit")],
+                        frontmost: terminal)
+        desk.config = Config(exempt: ["Finder"])
+        _ = desk.evaluate()
+        desk.state.markRefused(106, at: t0)
+        func hideable() -> [PID] {
+            desk.apps.filter {
+                Policy.mayHideNow($0, state: desk.state, observation: desk.observation, config: desk.config, now: desk.now)
+            }.map(\.pid)
+        }
+        XCTAssertEqual(hideable(), [102, 106], "fresh and refused apps, never frontmost/exempt/hidden/off-space")
+        desk.fullscreen = true
+        XCTAssertEqual(hideable(), [], "a fullscreen Space")
+        desk.fullscreen = false
+        desk.locked = true
+        XCTAssertEqual(hideable(), [], "a locked screen")
+        desk.locked = false
+        desk.state.pause(until: nil, at: desk.now)
+        XCTAssertEqual(hideable(), [], "paused")
+        desk.state.resume(at: desk.now)
+        desk.send(.away(.displaySleep))
+        XCTAssertEqual(hideable(), [], "away")
+    }
+
+    func testRemovingAnExemptionStartsAFreshTimeoutInsteadOfHidingAtOnce() {
+        var desk = desk()
+        desk.config = Config(exempt: ["Notes"])
+        _ = desk.evaluate()
+        desk.at(300)
+        XCTAssertEqual(desk.evaluate().hide, [preview])
+        let old = desk.config
+        desk.config = Config(exempt: [])
+        desk.state.configChanged(from: old, to: desk.config, apps: desk.apps, at: desk.now)
+        XCTAssertEqual(desk.lastActive(notes), t0 + 300)
+        XCTAssertEqual(desk.lastActive(preview), t0, "an app that could already hide keeps its timer")
+        XCTAssertEqual(desk.evaluate(), Decision(hide: [preview], nextCheck: t0 + 360))
+    }
+
+    func testJoiningOnlyAppsStartsAFreshTimeout() {
+        var desk = desk()
+        desk.config = Config(exempt: [], onlyApps: ["Preview"])
+        _ = desk.evaluate()
+        desk.at(300)
+        let old = desk.config
+        desk.config = Config(exempt: [], onlyApps: ["Preview", "Notes"])
+        desk.state.configChanged(from: old, to: desk.config, apps: desk.apps, at: desk.now)
+        XCTAssertEqual(desk.status(notes), .pending(hideAt: t0 + 360))
     }
 
     func testRefreshAllNeverMovesATimerBackwards() {
